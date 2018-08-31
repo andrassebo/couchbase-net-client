@@ -14,6 +14,28 @@ namespace Couchbase.IO.Utils
     {
         private static readonly ILog Log = LogManager.GetLogger(typeof(SocketExtensions));
 
+        /// <remarks>
+        /// <code>
+        /// #include &lt;netinet/in.h&gt;
+        /// #include &lt;netinet/tcp.h&gt;
+        /// #define check(expr) if (!(expr)) { return 0; }
+        ///
+        /// int enable_keepalive(int sock, int enable_keepalive, int time, int interval, int maxpkt)
+        /// {
+        ///   check(setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &amp;enable_keepalive, sizeof(int)) != -1);
+        ///   check(setsockopt(sock, IPPROTO_TCP, TCP_KEEPIDLE, &amp;time, sizeof(int)) != -1);
+        ///   check(setsockopt(sock, IPPROTO_TCP, TCP_KEEPINTVL, &amp;interval, sizeof(int)) != -1);
+        ///   check(setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &amp;maxpkt, sizeof(int)) != -1);
+        ///   return 1;
+        /// }
+        /// </code>
+        /// 
+        /// gcc keepalive.c -c -fPIC
+        ///  gcc keepalive.o -shared -o keepalive.so
+        /// </remarks>
+        [DllImport("keepalive.so")]
+        private static extern int enable_keepalive(int sock, int enable_keepalive, int time, int interval, int maxpkt);
+
         /// <summary>
         /// Enable TCP keep-alives, the time and interval on a managed Socket.
         /// </summary>
@@ -26,12 +48,19 @@ namespace Couchbase.IO.Utils
         {
             try
             {
-                const uint temp = 0;
-                var values = new byte[Marshal.SizeOf(temp)*3];
-                BitConverter.GetBytes((uint) (on ? 1 : 0)).CopyTo(values, 0);
-                BitConverter.GetBytes(time).CopyTo(values, Marshal.SizeOf(temp));
-                BitConverter.GetBytes(interval).CopyTo(values, Marshal.SizeOf(temp)*2);
-                socket.IOControl(IOControlCode.KeepAliveValues, values, null);
+                if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+                {
+                    enable_keepalive((int)socket.Handle, 1, 10, 5, 12);
+                }
+                else
+                {
+                    const uint temp = 0;
+                    var values = new byte[Marshal.SizeOf(temp) * 3];
+                    BitConverter.GetBytes((uint)(on ? 1 : 0)).CopyTo(values, 0);
+                    BitConverter.GetBytes(time).CopyTo(values, Marshal.SizeOf(temp));
+                    BitConverter.GetBytes(interval).CopyTo(values, Marshal.SizeOf(temp) * 2);
+                    socket.IOControl(IOControlCode.KeepAliveValues, values, null);
+                }
             }
             catch (PlatformNotSupportedException)
             {
