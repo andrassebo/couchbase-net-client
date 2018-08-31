@@ -15,11 +15,12 @@ using Couchbase.Core.Version;
 using Couchbase.IO.Http;
 using Couchbase.Management;
 using Couchbase.N1QL;
+using Couchbase.Tracing;
 using Couchbase.Utils;
 using Couchbase.Views;
 using Newtonsoft.Json;
 
-#if NET45
+#if NET452
 using System.Configuration;
 using Couchbase.Configuration.Client.Providers;
 #endif
@@ -58,7 +59,7 @@ namespace Couchbase
         {
         }
 
-#if NET45
+#if NET452
 
         /// <summary>
         /// Ctor for creating Cluster instance using an App.Config or Web.config.
@@ -220,7 +221,7 @@ namespace Couchbase
             return new ClusterManager(Configuration,
                 serverConfig,
                 new JsonDataMapper(Configuration),
-                new CouchbaseHttpClient(username, password),
+                new CouchbaseHttpClient(username, password, Configuration),
                 username,
                 password);
         }
@@ -480,6 +481,14 @@ namespace Couchbase
                 if (_clusterController != null)
                 {
                     _clusterController.Dispose();
+                }
+                if (_configuration.Tracer is ThresholdLoggingTracer tracer)
+                {
+                    tracer.Dispose();
+                }
+                if (_configuration.OrphanedResponseLogger is OrphanedResponseLogger logger)
+                {
+                    logger.Dispose();
                 }
                 _disposed = true;
             }

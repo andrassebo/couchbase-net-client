@@ -1,9 +1,12 @@
 ﻿using System;
 using System.IO;
+using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
+using Couchbase.Authentication;
 using Couchbase.Authentication.X509;
 using Couchbase.Configuration.Client;
 using Couchbase.IntegrationTests.Utils;
@@ -90,16 +93,15 @@ namespace Couchbase.IntegrationTests.IO
 
             ClientConfiguration.IgnoreRemoteCertificateNameMismatch = true;//ignore for now
             config.EnableDeadServiceUriPing = true; //temp must fix
-            config.EnableCertificateAuthentication = true;
             config.CertificateFactory = CertificateFactory.GetCertificatesByPathAndPassword(
                 new PathAndPasswordOptions
                 {
-                    // Path = TestContext.CurrentContext.TestDirectory + "\\client.pfx",
-                    Path = "C:\\Users\\jmorris\\client.pfx",
+                    Path = TestContext.CurrentContext.TestDirectory + "\\client.pfx",
                     Password = "password"
                 });
 
             var cluster = new Cluster(config);
+            cluster.Authenticate(new CertAuthenticator());
 
             var bucket = cluster.OpenBucket();
             var result = bucket.Upsert("mykey", "myvalue");
@@ -129,13 +131,13 @@ namespace Couchbase.IntegrationTests.IO
             config.CertificateFactory = CertificateFactory.GetCertificatesByPathAndPassword(
                 new PathAndPasswordOptions
                 {
-                    // Path = TestContext.CurrentContext.TestDirectory + "\\client.pfx",
-                    Path = "C:\\Users\\jmorris\\client.pfx",
+                    Path = TestContext.CurrentContext.TestDirectory + "\\client.pfx",
                     Password = "password"
                 });
 
             using (var cluster = new Cluster(config))
             {
+                cluster.Authenticate(new CertAuthenticator());
                 var bucket = cluster.OpenBucket();
                 var query = new QueryRequest("SELECT * FROM `default`;");
                 var queryResult = bucket.Query<dynamic>(query);
@@ -157,13 +159,13 @@ namespace Couchbase.IntegrationTests.IO
             config.CertificateFactory = CertificateFactory.GetCertificatesByPathAndPassword(
                 new PathAndPasswordOptions
                 {
-                    // Path = TestContext.CurrentContext.TestDirectory + "\\client.pfx",
-                    Path = "C:\\Users\\jmorris\\client.pfx",
+                    Path = TestContext.CurrentContext.TestDirectory + "\\client.pfx",
                     Password = "password"
                 });
 
             using (var cluster = new Cluster(config))
             {
+                cluster.Authenticate(new CertAuthenticator());
                 var bucket = cluster.OpenBucket();
                 var viewQuery = new ViewQuery("default", "test", "test");
                 var viewResult = bucket.Query<dynamic>(viewQuery);
@@ -184,13 +186,13 @@ namespace Couchbase.IntegrationTests.IO
             config.CertificateFactory = CertificateFactory.GetCertificatesByPathAndPassword(
                 new PathAndPasswordOptions
                 {
-                    // Path = TestContext.CurrentContext.TestDirectory + "\\client.pfx",
-                    Path = "C:\\Users\\jmorris\\client.pfx",
+                    Path = TestContext.CurrentContext.TestDirectory + "\\client.pfx",
                     Password = "password"
                 });
 
             using (var cluster = new Cluster(config))
             {
+                cluster.Authenticate(new CertAuthenticator());
                 var bucket = cluster.OpenBucket();
                 var query = new MatchQuery("inn");
                 var searchResult = bucket.Query(new SearchQuery
@@ -200,6 +202,54 @@ namespace Couchbase.IntegrationTests.IO
                 }.Limit(10).Timeout(TimeSpan.FromMilliseconds(10000)));
                 Assert.True(searchResult.Success);
             }
+        }
+
+         [Test]
+        [TestCase(SslPolicyErrors.None, true)]
+        [TestCase(SslPolicyErrors.RemoteCertificateChainErrors, false)]
+        [TestCase(SslPolicyErrors.RemoteCertificateNameMismatch, false)]
+        [TestCase(SslPolicyErrors.RemoteCertificateNotAvailable, false)]
+        public void When_Custom_KvServerCertificateValidationCallback_Provided_It_Is_Used(SslPolicyErrors sslPolicyErrors, bool success)
+        {
+            var config = new ClientConfiguration
+            {
+                KvServerCertificateValidationCallback = OnCertificateValidation
+            };
+
+            var mockConnection = new Mock<IConnection>();
+            mockConnection.Setup(x => x.IsConnected).Returns(false);
+
+            var mockConnectionPool = new Mock<IConnectionPool>();
+            mockConnectionPool.Setup(x => x.Acquire()).Returns(mockConnection.Object);
+            mockConnectionPool.SetupGet(x => x.Configuration).Returns(config.PoolConfiguration);
+
+            Socket socket = null;
+            try
+            {
+                socket = new Socket(SocketType.Stream, ProtocolType.Tcp);
+                socket.Connect(IPAddress.Parse(TestConfiguration.Settings.Hostname), 11207);
+
+                var conn = new SslConnection(mockConnectionPool.Object,
+                    socket, new DefaultConverter(), new BufferAllocator(0, 0));
+
+                var sslStream = typeof(SslConnection)
+                    .GetField("_sslStream", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(conn);
+
+                var remoteCertificateValidationCallback = (RemoteCertificateValidationCallback) typeof(SslStream)
+                    .GetField("_userCertificateValidationCallback", BindingFlags.Instance | BindingFlags.NonPublic)
+                    .GetValue(sslStream);
+
+                Assert.AreEqual(success, remoteCertificateValidationCallback(null, null, null, sslPolicyErrors));
+            }
+            finally
+            {
+                socket?.Dispose();
+            }
+        }
+
+        private static bool OnCertificateValidation(object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors sslPolicyErrors)
+        {
+            return sslPolicyErrors == SslPolicyErrors.None;
         }
     }
 }

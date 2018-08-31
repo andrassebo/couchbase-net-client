@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
@@ -7,7 +7,6 @@ using System.Threading.Tasks;
 using Couchbase.Configuration.Server.Serialization;
 using Couchbase.Core;
 using Couchbase.Core.Buckets;
-using Couchbase.Core.Diagnostics;
 using Couchbase.Core.Transcoders;
 using Couchbase.IO.Converters;
 using Couchbase.IO.Operations.Errors;
@@ -26,8 +25,6 @@ namespace Couchbase.IO.Operations
         private bool _timedOut;
         protected IByteConverter Converter;
         protected Flags Flags;
-        private Dictionary<TimingLevel, IOperationTimer> _timers;
-        protected int HeaderLength => HeaderIndexFor.HeaderLength;
         public const int DefaultRetries = 2;
         protected static MutationToken DefaultMutationToken = new MutationToken(null, -1, -1, -1);
         internal ErrorCode ErrorCode;
@@ -56,7 +53,6 @@ namespace Couchbase.IO.Operations
         {
         }
 
-        public Func<TimingLevel, object, IOperationTimer> Timer { get; set; }
         public abstract OperationCode OperationCode { get; }
         public OperationHeader Header { get; set; }
         public OperationBody Body { get; set; }
@@ -84,38 +80,6 @@ namespace Couchbase.IO.Operations
         public virtual void Reset()
         {
             Reset(ResponseStatus.Success);
-        }
-
-        public void BeginTimer(TimingLevel level)
-        {
-            if (Timer != null)
-            {
-                var timer = Timer(level, this);
-                if (_timers == null)
-                {
-                    _timers = new Dictionary<TimingLevel, IOperationTimer>();
-                }
-                if (!_timers.ContainsKey(level))
-                {
-                    _timers.Add(level, timer);
-                }
-            }
-        }
-
-        public void EndTimer(TimingLevel level)
-        {
-            if (_timers != null && _timers.ContainsKey(level))
-            {
-                IOperationTimer timer;
-                if(_timers.TryGetValue(level, out timer))
-                {
-                    if (timer != null)
-                    {
-                        timer.Dispose();
-                        _timers.Remove(level);
-                    }
-                }
-            }
         }
 
         public virtual void Reset(ResponseStatus status)
@@ -216,7 +180,7 @@ namespace Couchbase.IO.Operations
 
         public virtual byte[] CreateHeader(byte[] extras, byte[] body, byte[] key)
         {
-            var header = new byte[24];
+            var header = new byte[OperationHeader.Length];
             var totalLength = extras.GetLengthSafe() + key.GetLengthSafe() + body.GetLengthSafe();
 
             Converter.FromByte((byte)Magic.Request, header, HeaderIndexFor.Magic);
@@ -327,6 +291,27 @@ namespace Couchbase.IO.Operations
             {
                 status = ResponseStatus.ClientFailure;
             }
+
+            //For CB 5.X "LOCKED" is now returned when a key is locked with GetL (surprise, surprise)
+            //However, the 2.X SDKs cannot return locked becuase it will not be backwards compatible,
+            //so will break the bug that was fixed on the server and set the status back to TEMP_FAIL.
+            //This will enable applications that rely on TEMP_FAIL and the special exception to work
+            //as they did with pre-5.X servers.
+            if (status == ResponseStatus.Locked)
+            {
+                switch (OperationCode)
+                {
+                    case OperationCode.Set:
+                    case OperationCode.Replace:
+                    case OperationCode.Delete:
+                        status = ResponseStatus.KeyExists;
+                        break;
+                    default:
+                        status = ResponseStatus.TemporaryFailure;
+                        break;
+                }
+            }
+
             return status;
         }
 
@@ -423,13 +408,13 @@ namespace Couchbase.IO.Operations
             if (GetResponseStatus() != ResponseStatus.Success && Data != null && Data.Length > 0)
             {
                 var buffer = Data.ToArray();
-                if (buffer.Length > 0 && TotalLength == 24)
+                if (buffer.Length > 0 && TotalLength == OperationHeader.Length)
                 {
                     body = Converter.ToString(buffer, 0, buffer.Length);
                 }
                 else
                 {
-                    body = Converter.ToString(buffer, 24, Math.Min(buffer.Length - 24, TotalLength - 24));
+                    body = Converter.ToString(buffer, OperationHeader.Length, Math.Min(buffer.Length - OperationHeader.Length, TotalLength - OperationHeader.Length));
                 }
             }
 
@@ -534,12 +519,6 @@ namespace Couchbase.IO.Operations
 
             return ErrorCode.GetNextInterval(Attempts, defaultTimeout);
         }
-
-        /// <summary>
-        /// The current active <see cref="ISpan"/> used for tracing.
-        /// Intended for internal use only.
-        /// </summary>
-        public ISpan ActiveSpan { get; set; }
 
         protected void TryReadMutationToken(byte[] buffer)
         {

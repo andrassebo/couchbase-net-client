@@ -1,4 +1,4 @@
-﻿#if NET45
+#if NET452
 using System;
 using System.Collections.Generic;
 using System.Configuration;
@@ -272,6 +272,19 @@ namespace Couchbase.Configuration.Client.Providers
             get { return (uint)this["queryRequestTimeout"]; }
             set { this["queryRequestTimeout"] = value; }
         }
+
+        /// <summary>
+        /// Sets the timeout for each HTTP Analytics query request.
+        /// </summary>
+        /// <remarks>The default is 75000ms.</remarks>
+        /// <remarks>The value must be greater than Zero.</remarks>
+        [ConfigurationProperty("analyticsRequestTimeout", DefaultValue = "75000", IsRequired = false)]
+        public uint AnalyticsRequestTimeout
+        {
+            get => (uint)this["analyticsRequestTimeout"];
+            set => this["analyticsRequestTimeout"] = value;
+        }
+
 
         /// <summary>
         /// Gets or sets whether the elasped client time, elasped cluster time and query statement for a N1QL query requst are written to the log appender.
@@ -651,7 +664,7 @@ namespace Couchbase.Configuration.Client.Providers
         /// <value>
         /// <c>true</c> if the client must use Plain SASL authentication; otherwise, <c>false</c>.
         /// </value>
-        [ConfigurationProperty("forceSaslPlain", IsRequired = false, DefaultValue = false)]
+        [ConfigurationProperty("forceSaslPlain", IsRequired = false, DefaultValue = true)]
         public bool ForceSaslPlain
         {
             get => (bool) this["forceSaslPlain"];
@@ -659,20 +672,33 @@ namespace Couchbase.Configuration.Client.Providers
         }
 
         /// <summary>
-        /// Controls whether the <see cref="T:Couchbase.Tracing.ThresholdLoggingTracer" /> is used when configuring the client.
+        /// Controls whether the operation tracing is enabled within the client.
         /// </summary>
         /// <value>
-        /// <c>true</c> if the <see cref="T:Couchbase.Tracing.ThresholdLoggingTracer" /> is to be used; otherwise, <c>false</c>.
+        /// <c>true</c> if operation tracing is enabled; otherwise, <c>false</c>.
         /// </value>
-        [ConfigurationProperty("responseTimeObservabilityEnabled", IsRequired = false, DefaultValue = true)]
-        public bool ResponseTimeObservabilityEnabled
+        [ConfigurationProperty("operationTracingEnabled", IsRequired = false, DefaultValue = true)]
+        public bool OperationTracingEnabled
         {
-            get => (bool)this["responseTimeObservabilityEnabled"];
-            set => this["responseTimeObservabilityEnabled"] = value;
+            get => (bool)this["operationTracingEnabled"];
+            set => this["operationTracingEnabled"] = value;
         }
 
         /// <summary>
-        /// Controls whether orphaned server responses are recorded and logged.
+        /// Gets or sets a value indicating whether KV operation server duration times are collected during processing.
+        /// </summary>
+        /// <value>
+        /// <c>true</c> if server durations are collected otherwise, <c>false</c>.
+        /// </value>
+        [ConfigurationProperty("operationTracingServerDurationEnabled", IsRequired = false, DefaultValue = true)]
+        public bool OperationTracingServerDurationEnabled
+        {
+            get => (bool)this["operationTracingServerDurationEnabled"];
+            set => this["operationTracingServerDurationEnabled"] = value;
+        }
+
+        /// <summary>
+        /// Controls whether orphaned server responses are collected and logged.
         /// </summary>
         /// <value>
         /// <c>true</c> if orphaned server responses are logged; otherwise, <c>false</c>.
@@ -682,6 +708,28 @@ namespace Couchbase.Configuration.Client.Providers
         {
             get => (bool)this["orphanedResponseLoggingEnabled"];
             set => this["orphanedResponseLoggingEnabled"] = value;
+        }
+
+        /// <summary>
+        /// If <see cref="EnableCertificateAuthentication"/> is true, certificate revocation list
+        /// will be checked during authentication. The default is disabled (false).
+        /// </summary>
+        /// <remarks>Only applies to .NET 4.6 and higher (and core).</remarks>
+        [ConfigurationProperty("enableCertificateRevocation", IsRequired = false, DefaultValue = false)]
+        public bool EnableCertificateRevocation
+        {
+            get => (bool)this["enableCertificateRevocation"];
+            set => this["enableCertificateRevocation"] = value;
+        }
+
+        /// <summary>
+        /// Enables X509 authentication with the Couchbase cluster.
+        /// </summary>
+        [ConfigurationProperty("enableCertificateAuthentication", IsRequired = false, DefaultValue = false)]
+        public bool EnableCertificateAuthentication
+        {
+            get => (bool)this["enableCertificateAuthentication"];
+            set => this["enableCertificateAuthentication"] = value;
         }
 
         #region Additional ICouchbaseClientDefinition implementations

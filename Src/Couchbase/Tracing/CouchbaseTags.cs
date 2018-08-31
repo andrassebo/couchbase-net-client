@@ -7,9 +7,9 @@ namespace Couchbase.Tracing
         public const string Service = "couchbase.service";
         public const string ServiceKv = "kv";
         public const string ServiceView = "view";
-        public const string ServiceN1ql = "n1ql";
-        public const string ServiceSearch = "search";
-        public const string ServiceAnalytics = "analytics";
+        public const string ServiceQuery = "n1ql";
+        public const string ServiceSearch = "fts";
+        public const string ServiceAnalytics = "cbas";
 
         public const string OperationId = "couchbase.operation_id";
         public const string LocalId = "couchbase.local_id";

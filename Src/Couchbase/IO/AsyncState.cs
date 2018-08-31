@@ -1,9 +1,10 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using Couchbase.IO.Converters;
+using Couchbase.IO.Operations;
 using Couchbase.IO.Operations.Errors;
 using Couchbase.IO.Utils;
 using OpenTracing;
@@ -21,8 +22,10 @@ namespace Couchbase.IO
         public uint Opaque { get; set; }
         public Timer Timer;
         public ISpan DispatchSpan { get; set; }
-        public string CorrelationId { get; set; }
+        public string ConnectionId { get; set; }
         public ErrorMap ErrorMap { get; set; }
+        public int Timeout { get; set; }
+        public string LocalEndpoint { get; set; }
 
         /// <summary>
         /// Cancels the current Memcached request that is in-flight.
@@ -34,7 +37,7 @@ namespace Couchbase.IO
                 Timer.Dispose();
             }
 
-            var response = new byte[24];
+            var response = new byte[OperationHeader.Length];
             Converter.FromUInt32(Opaque, response, HeaderIndexFor.Opaque);
 
             Callback(new SocketAsyncState
@@ -46,8 +49,10 @@ namespace Couchbase.IO
                 Status = status,
                 EndPoint = EndPoint,
                 DispatchSpan = DispatchSpan,
-                CorrelationId = CorrelationId,
-                ErrorMap = ErrorMap
+                ConnectionId = ConnectionId,
+                ErrorMap = ErrorMap,
+                Timeout = Timeout,
+                LocalEndpoint = LocalEndpoint
             });
         }
 
@@ -69,7 +74,7 @@ namespace Couchbase.IO
             //this means the request never completed - assume a transport failure
             if (response == null)
             {
-                response = new byte[24];
+                response = new byte[OperationHeader.Length];
                 Converter.FromUInt32(Opaque, response, HeaderIndexFor.Opaque);
                 e = new SendTimeoutExpiredException();
                 status = ResponseStatus.TransportFailure;
@@ -84,9 +89,17 @@ namespace Couchbase.IO
                 Status = status,
                 EndPoint = EndPoint,
                 DispatchSpan = DispatchSpan,
-                CorrelationId = CorrelationId,
-                ErrorMap = ErrorMap
+                ConnectionId = ConnectionId,
+                ErrorMap = ErrorMap,
+                Timeout = Timeout,
+                LocalEndpoint = LocalEndpoint
             }));
+        }
+
+        public void Dispose()
+        {
+            Timer?.Dispose();
+            DispatchSpan?.Finish();
         }
     }
 }

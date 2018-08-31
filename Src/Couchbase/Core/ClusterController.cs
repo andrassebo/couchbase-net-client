@@ -1,4 +1,4 @@
-﻿using Couchbase.Logging;
+using Couchbase.Logging;
 using Couchbase.Authentication.SASL;
 using Couchbase.Configuration.Client;
 using Couchbase.Configuration.Server.Providers;
@@ -17,6 +17,7 @@ using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using Couchbase.Authentication;
+using Couchbase.Authentication.X509;
 using Couchbase.Core.Monitoring;
 using Couchbase.Configuration.Server.Monitoring;
 using Couchbase.IO.Operations;
@@ -203,6 +204,10 @@ namespace Couchbase.Core
             }
             else
             {
+                if (authenticator is CertAuthenticator)
+                {
+                    return new KeyValuePair<string, string>(username ?? bucketName, null);
+                }
                 var bucketCredentials = authenticator.GetCredentials(AuthContext.BucketKv, bucketName);
                 switch (authenticator.AuthenticatorType)
                 {
@@ -254,7 +259,7 @@ namespace Couchbase.Core
 
         public async Task<IBucket> CreateBucketAsync(string bucketName, string password, IAuthenticator authenticator = null)
         {
-            await _semaphoreSlim.WaitAsync().ConfigureAwait(false);
+            await _semaphoreSlim.WaitAsync().ContinueOnAnyContext();
             try
             {
                 return CreateBucketImpl(bucketName, password, authenticator);
@@ -464,7 +469,7 @@ namespace Couchbase.Core
 
                         var operation = new Config(Transcoder, _clientConfig.DefaultOperationLifespan, server.EndPoint);
                         IOperationResult<BucketConfig> result;
-                        using (configInfo.ClientConfig.Tracer.StartParentSpan(operation, addIgnoreTag: true))
+                        using (configInfo.ClientConfig.Tracer.StartParentScope(operation, addIgnoreTag: true))
                         {
                             result = server.Send(operation);
                         }

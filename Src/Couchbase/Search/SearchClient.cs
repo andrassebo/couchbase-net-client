@@ -1,5 +1,6 @@
-﻿using System;
+using System;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Threading.Tasks;
@@ -8,8 +9,10 @@ using Couchbase.Configuration;
 using Couchbase.Utils;
 using Couchbase.Views;
 using System.Text;
+using System.Threading;
 using Couchbase.Configuration.Client;
 using Couchbase.Tracing;
+using Newtonsoft.Json;
 
 namespace Couchbase.Search
 {
@@ -24,9 +27,10 @@ namespace Couchbase.Search
         //for log redaction
         private Func<object, string> User = RedactableArgument.UserAction;
 
-        public SearchClient(HttpClient httpClient, IDataMapper dataMapper, ClientConfiguration configuration)
-            : base(httpClient, dataMapper, configuration)
-        { }
+        public SearchClient(HttpClient httpClient, IDataMapper dataMapper, ConfigContextBase context)
+            : base(httpClient, dataMapper, context)
+        {
+        }
 
         /// <summary>
         /// Executes a <see cref="IFtsQuery" /> request including any <see cref="ISearchParams" /> parameters.
@@ -45,14 +49,23 @@ namespace Couchbase.Search
         /// Executes a <see cref="IFtsQuery" /> request including any <see cref="ISearchParams" /> parameters asynchronously.
         /// </summary>
         /// <returns>A <see cref="ISearchQueryResult"/> wrapped in a <see cref="Task"/> for awaiting on.</returns>
-        public async Task<ISearchQueryResult> QueryAsync(SearchQuery searchQuery)
+        public Task<ISearchQueryResult> QueryAsync(SearchQuery searchQuery)
+        {
+            return QueryAsync(searchQuery, CancellationToken.None);
+        }
+
+        /// <summary>
+        /// Executes a <see cref="IFtsQuery" /> request including any <see cref="ISearchParams" /> parameters asynchronously.
+        /// </summary>
+        /// <returns>A <see cref="ISearchQueryResult"/> wrapped in a <see cref="Task"/> for awaiting on.</returns>
+        public async Task<ISearchQueryResult> QueryAsync(SearchQuery searchQuery, CancellationToken cancellationToken)
         {
             var searchResult = new SearchQueryResult();
-            var baseUri = ConfigContextBase.GetSearchUri();
+            var baseUri = Context.GetSearchUri();
             var requestUri = new Uri(baseUri, searchQuery.RelativeUri());
 
             string searchBody;
-            using (ClientConfiguration.Tracer.BuildSpan(searchQuery, CouchbaseOperationNames.RequestEncoding).Start())
+            using (ClientConfiguration.Tracer.BuildSpan(searchQuery, CouchbaseOperationNames.RequestEncoding).StartActive())
             {
                 searchBody = searchQuery.ToJson();
             }
@@ -62,12 +75,12 @@ namespace Couchbase.Search
                 using (var content = new StringContent(searchBody, Encoding.UTF8, MediaType.Json))
                 {
                     HttpResponseMessage response;
-                    using (ClientConfiguration.Tracer.BuildSpan(searchQuery, CouchbaseOperationNames.DispatchToServer).Start())
+                    using (ClientConfiguration.Tracer.BuildSpan(searchQuery, CouchbaseOperationNames.DispatchToServer).StartActive())
                     {
-                        response = await HttpClient.PostAsync(requestUri, content).ContinueOnAnyContext();
+                        response = await HttpClient.PostAsync(requestUri, content, cancellationToken).ContinueOnAnyContext();
                     }
 
-                    using (ClientConfiguration.Tracer.BuildSpan(searchQuery, CouchbaseOperationNames.ResponseDecoding).Start())
+                    using (ClientConfiguration.Tracer.BuildSpan(searchQuery, CouchbaseOperationNames.ResponseDecoding).StartActive())
                     using (var stream = await response.Content.ReadAsStreamAsync().ContinueOnAnyContext())
                     {
                         if (response.IsSuccessStatusCode)
@@ -76,14 +89,29 @@ namespace Couchbase.Search
                         }
                         else
                         {
-                            // ReSharper disable once UseStringInterpolation
-                            var message = string.Format("{0}: {1}", (int)response.StatusCode, response.ReasonPhrase);
-                            ProcessError(new HttpRequestException(message), searchResult);
-
+                            string responseContent;
                             using (var reader = new StreamReader(stream))
                             {
-                                searchResult.Errors.Add(await reader.ReadToEndAsync().ContinueOnAnyContext());
+                                responseContent = await reader.ReadToEndAsync().ContinueOnAnyContext();
                             }
+
+                            if (response.Content.Headers.TryGetValues("Content-Type", out var values) &&
+                                values.Any(value => value.Contains(MediaType.Json)))
+                            {
+                                // server 5.5+ responds with JSON content
+                                var result = JsonConvert.DeserializeObject<FailedSearchQueryResult>(responseContent);
+                                ProcessError(new HttpRequestException(result.Message), searchResult);
+                                searchResult.Errors.Add(result.Message);
+                            }
+                            else
+                            {
+                                // use response content as raw string
+                                // ReSharper disable once UseStringInterpolation
+                                var message = string.Format("{0}: {1}", (int)response.StatusCode, response.ReasonPhrase);
+                                ProcessError(new HttpRequestException(message), searchResult);
+                                searchResult.Errors.Add(responseContent);
+                            }
+
                             if (response.StatusCode == HttpStatusCode.NotFound)
                             {
                                 baseUri.IncrementFailed();
@@ -92,6 +120,17 @@ namespace Couchbase.Search
                     }
                 }
                 baseUri.ClearFailed();
+            }
+            catch (OperationCanceledException e)
+            {
+                var operationContext = OperationContext.CreateSearchContext(Context.BucketName, baseUri?.Authority);
+                if (searchQuery is SearchQuery query)
+                {
+                    operationContext.TimeoutMicroseconds = query.TimeoutValue;
+                }
+
+                Log.Info(operationContext.ToString());
+                ProcessError(e, searchResult);
             }
             catch (HttpRequestException e)
             {

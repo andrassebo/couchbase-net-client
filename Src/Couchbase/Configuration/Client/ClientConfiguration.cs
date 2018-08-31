@@ -2,15 +2,16 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
+using System.Net.Http;
+using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using Couchbase.Logging;
 using Couchbase.Authentication;
 using Couchbase.Authentication.SASL;
+using Couchbase.Authentication.X509;
 using Couchbase.Configuration.Server.Providers;
 using Couchbase.Configuration.Server.Serialization;
-using Couchbase.Core;
-using Couchbase.Core.Diagnostics;
 using Couchbase.Core.Serialization;
 using Couchbase.Core.Transcoders;
 using Couchbase.IO;
@@ -21,8 +22,7 @@ using Couchbase.Utils;
 using Newtonsoft.Json.Serialization;
 using Newtonsoft.Json;
 using OpenTracing;
-using OpenTracing.NullTracer;
-#if NET45
+#if NET452
 using Couchbase.Configuration.Client.Providers;
 #endif
 #if NETSTANDARD
@@ -60,6 +60,7 @@ namespace Couchbase.Configuration.Client
         {
             public static Uri Server = new Uri("http://localhost:8091/pools");
             public static uint QueryRequestTimeout = 75000;
+            public static uint AnalyticsRequestTimeout = 75000;
             public static bool EnableQueryTiming = false;
             public static bool UseSsl = false;
             public static uint SslPort = 11207;
@@ -112,19 +113,21 @@ namespace Couchbase.Configuration.Client
             public static bool UseConnectionPooling = false;
             public static bool EnableDeadServiceUriPing = true;
 
-            public static bool ForceSaslPlain = false;
+            public static bool ForceSaslPlain = true;
 
-            public static bool ResponseTimeObservabiltyEnabled = true;
+            public static bool OperationTracingEnabled = true;
+            public static bool OperationTracingServerDurationEnabled = true;
             public static bool OrphanedResponseLoggingEnabled = true;
 
-            public static bool ServerDurationTracingEnabled = true;
+            //x509 certificate settings
+            public static bool EnableCertificateRevocation = false;
+            public static bool EnableCertificateAuthentication = false;
         }
 
         public ClientConfiguration()
         {
-            //For operation timing
-            Timer = TimingFactory.GetTimer();
             QueryRequestTimeout = Defaults.QueryRequestTimeout;
+            AnalyticsRequestTimeout = Defaults.AnalyticsRequestTimeout;
             EnableQueryTiming = Defaults.EnableQueryTiming;
             UseSsl = Defaults.UseSsl;
             SslPort = (int) Defaults.SslPort;
@@ -215,14 +218,9 @@ namespace Couchbase.Configuration.Client
             };
             Servers = new List<Uri> { Defaults.Server };
 
-            // create default tracer & orphaned operation reporter
-            Tracer = Defaults.ResponseTimeObservabiltyEnabled
-                ? new ThresholdLoggingTracer()
-                : (ITracer) NullTracer.Instance;
-
-            OrphanedOperationReporter = Defaults.OrphanedResponseLoggingEnabled
-                ? new OrphanedResponseReporter()
-                : NullOrphanedOperationReporter.Instance;
+            OperationTracingEnabled = Defaults.OperationTracingEnabled;
+            OperationTracingServerDurationEnabled = Defaults.OperationTracingServerDurationEnabled;
+            OrphanedResponseLoggingEnabled = Defaults.OrphanedResponseLoggingEnabled;
 
             //Set back to default
             _operationLifespanChanged = false;
@@ -230,7 +228,7 @@ namespace Couchbase.Configuration.Client
             _poolConfigurationChanged = false;
         }
 
-#if NET45
+#if NET452
 
         /// <summary>
         /// For synchronization with App.config or Web.configs.
@@ -248,7 +246,8 @@ namespace Couchbase.Configuration.Client
         /// <param name="definition"></param>
         public ClientConfiguration(ICouchbaseClientDefinition definition)
         {
-            Timer = TimingFactory.GetTimer();
+            EnableCertificateAuthentication = definition.EnableCertificateAuthentication;
+            EnableCertificateRevocation = definition.EnableCertificateRevocation;
             UseConnectionPooling = definition.UseConnectionPooling;
             EnableDeadServiceUriPing = definition.EnableDeadServiceUriPing;
             NodeAvailableCheckInterval = definition.NodeAvailableCheckInterval;
@@ -285,6 +284,7 @@ namespace Couchbase.Configuration.Client
             DefaultOperationLifespan = definition.OperationLifespan;
             QueryFailedThreshold = definition.QueryFailedThreshold;
             QueryRequestTimeout = definition.QueryRequestTimeout;
+            AnalyticsRequestTimeout = definition.AnalyticsRequestTimeout;
             EnableQueryTiming = definition.EnableQueryTiming;
             SearchRequestTimeout = definition.SearchRequestTimeout;
             VBucketRetrySleepTime = definition.VBucketRetrySleepTime;
@@ -375,8 +375,7 @@ namespace Couchbase.Configuration.Client
                     TcpKeepAliveTime = keepAlivesChanged ? TcpKeepAliveTime : definition.ConnectionPool.TcpKeepAliveTime,
                     CloseAttemptInterval = definition.ConnectionPool.CloseAttemptInterval,
                     MaxCloseAttempts = definition.ConnectionPool.MaxCloseAttempts,
-                    ClientConfiguration = this,
-                    ServerDurationTracingEnabled = definition.ConnectionPool.ServerDurationTracingEnabled
+                    ClientConfiguration = this
                 };
                 PoolConfiguration.Validate();
             }
@@ -459,13 +458,9 @@ namespace Couchbase.Configuration.Client
                 SetAuthenticator(authenticator);
             }
 
-            Tracer = definition.ResponseTimeObservabilityEnabled
-                ? new ThresholdLoggingTracer()
-                : (ITracer) NullTracer.Instance;
-
-            OrphanedOperationReporter = definition.OrphanedResponseLoggingEnabled
-                ? new OrphanedResponseReporter()
-                : NullOrphanedOperationReporter.Instance;
+            OperationTracingEnabled = definition.OperationTracingEnabled;
+            OperationTracingServerDurationEnabled = definition.OperationTracingServerDurationEnabled;
+            OrphanedResponseLoggingEnabled = definition.OrphanedResponseLoggingEnabled;
 
             //Set back to default
             _operationLifespanChanged = false;
@@ -650,12 +645,6 @@ namespace Couchbase.Configuration.Client
         /// </value>
         [JsonIgnore]
         public Func<IIOService> Transporter { get; set; }
-
-        /// <summary>
-        /// A factory for creating <see cref="IOperationTimer"/>'s.
-        /// </summary>
-        [JsonIgnore]
-        public Func<TimingLevel, object, IOperationTimer> Timer { get; set; }
 
         /// <summary>
         /// A factory for creating the <see cref="IIOService"/> for this instance.
@@ -1056,11 +1045,7 @@ namespace Couchbase.Configuration.Client
         /// <value>
         /// The analytics request timeout.
         /// </value>
-        /// <remarks>Hardcoded for now - will implement config at a later time</remarks>
-        public uint AnalyticsRequestTimeout
-        {
-            get { return 75000; }
-        }
+        public uint AnalyticsRequestTimeout { get; set; }
 
         /// <summary>
         /// Checks to see if each Heartbeat setting has changed from its defaults and whether
@@ -1099,7 +1084,6 @@ namespace Couchbase.Configuration.Client
 
         internal void Initialize()
         {
-            //
             ResolveObsoletePollSettings();
 
             if (ConfigPollInterval <= ConfigPollCheckFloor)
@@ -1255,6 +1239,15 @@ namespace Couchbase.Configuration.Client
                         break;
                 }
             }
+            else
+            {
+                //configured for x509 authentication
+                if (authenticator is CertAuthenticator certificateAuthenticator)
+                {
+                    EnableCertificateAuthentication = true;
+                    certificateAuthenticator.Configuration = this;
+                }
+            }
 
             authenticator.Validate();
             Authenticator = authenticator;
@@ -1295,15 +1288,67 @@ namespace Couchbase.Configuration.Client
         /// </value>
         public bool ForceSaslPlain { get; set; }
 
-        /// <summary>
-        /// The OpenTracing <see cref="ITracer"/> used to collect generated <see cref="ISpan"/>s.
-        /// </summary>
-        public ITracer Tracer { get; set; }
+        private Lazy<ITracer> _tracer;
 
         /// <summary>
-        /// The Orphaned Response Reporter collects server responses for operationst that have timed out.
+        /// Controls whether the operation tracing is enabled within the client.
         /// </summary>
-        public IOrphanedOperationReporter OrphanedOperationReporter { get; set; }
+        /// <value>
+        /// <c>true</c> if operation tracing is enabled; otherwise, <c>false</c>.
+        /// </value>
+        public bool OperationTracingEnabled { get; set; }
+
+        /// <summary>
+        /// The OpenTracing <see cref="ITracer"/> used to collect and generated <see cref="ISpan"/>s.
+        /// </summary>
+        [JsonIgnore]
+        public ITracer Tracer
+        {
+            get
+            {
+                if (_tracer == null)
+                {
+                    _tracer = new Lazy<ITracer>(TracerFactory.GetFactory(this));
+                }
+                return _tracer.Value;
+            }
+            set => _tracer = new Lazy<ITracer>(() => value);
+        }
+
+        private Lazy<IOrphanedResponseLogger> _orphanedResponseLogger;
+
+        /// <summary>
+        /// Gets or sets a value indicating whether KV operation server duration times are collected during processing.
+        /// </summary>
+        /// <value>
+        /// <c>true</c> if server durations are collected otherwise, <c>false</c>.
+        /// </value>
+        public bool OperationTracingServerDurationEnabled { get; set; }
+
+        /// <summary>
+        /// The Orphaned Response Logger collects and logs server responses operations that have timed out.
+        /// </summary>
+        [JsonIgnore]
+        public IOrphanedResponseLogger OrphanedResponseLogger
+        {
+            get
+            {
+                if (_orphanedResponseLogger == null)
+                {
+                    _orphanedResponseLogger = new Lazy<IOrphanedResponseLogger>(OrphanedResponseLoggerFactory.GetFactory(this));
+                }
+                return _orphanedResponseLogger.Value;
+            }
+            set => _orphanedResponseLogger = new Lazy<IOrphanedResponseLogger>(() => value);
+        }
+
+        /// <summary>
+        /// Controls whether operation response reporting is enabled within the client.
+        /// </summary>
+        /// <value>
+        /// <c>true</c> if orphaned response reporting is enabled; otherwise, <c>false</c>.
+        /// </value>
+        public bool OrphanedResponseLoggingEnabled { get; set; }
 
         internal void ApplyConnectionString(ConnectionString connectionString)
         {
@@ -1343,6 +1388,7 @@ namespace Couchbase.Configuration.Client
             _serversChanged = true;
         }
 
+        /// <summary>
         /// Enables X509 authentication with the Couchbase cluster.
         /// </summary>
         public bool EnableCertificateAuthentication
@@ -1359,9 +1405,33 @@ namespace Couchbase.Configuration.Client
         }
 
         /// <summary>
+        /// If <see cref="EnableCertificateAuthentication"/> is true, certificate revocation list
+        /// will be checked during authentication. The default is disabled (false).
+        /// </summary>
+        /// <remarks>Only applies to .NET 4.6 and higher (and core).</remarks>
+        public bool EnableCertificateRevocation { get; set; }
+
+        /// <summary>
         /// Factory for retrieving X509 certificates from a store or off of the file system.
         /// </summary>
         public Func<X509Certificate2Collection> CertificateFactory { get; set; }
+
+#if NET452
+        /// <summary>
+        /// Gets or Sets the SSL validation callback for HTTP Services (N1QL, Analytics,Views, etc) to override the default callback.
+        /// </summary>
+        public RemoteCertificateValidationCallback HttpServerCertificateValidationCallback { get; set; }
+#else
+        /// <summary>
+        /// Gets or Sets the SSL validation callback for HTTP Services (N1QL, Analytics,Views, etc) to override the default callback.
+        /// </summary>
+        public Func<HttpRequestMessage, X509Certificate2, X509Chain, SslPolicyErrors, bool> HttpServerCertificateValidationCallback { get; set;}
+#endif
+
+        /// <summary>
+        /// Gets or Sets the SSL validation callback for K/V to override the default callback.
+        /// </summary>
+        public RemoteCertificateValidationCallback KvServerCertificateValidationCallback { get; set; }
     }
 }
 

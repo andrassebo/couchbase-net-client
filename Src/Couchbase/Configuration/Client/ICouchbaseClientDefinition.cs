@@ -421,20 +421,48 @@ namespace Couchbase.Configuration.Client
         ServerConfigurationProviders ConfigurationProviders { get; set; }
 
         /// <summary>
-        /// Controls whether the <see cref="ThresholdLoggingTracer"/> is used when configuring the client.
+        /// Controls whether the operation tracing is enabled within the client.
         /// </summary>
         /// <value>
-        /// <c>true</c> if the <see cref="ThresholdLoggingTracer"/> is to be used; otherwise, <c>false</c>.
+        /// <c>true</c> if operation tracing is enabled; otherwise, <c>false</c>.
         /// </value>
-        bool ResponseTimeObservabilityEnabled { get; set; }
+        bool OperationTracingEnabled { get; set; }
 
         /// <summary>
-        /// Controls whether orphaned server responses are recorded and logged.
+        /// Gets or sets a value indicating whether KV operation server duration times are collected during processing.
         /// </summary>
         /// <value>
+        /// <c>true</c> if server durations are collected otherwise, <c>false</c>.
+        /// </value>
+        bool OperationTracingServerDurationEnabled { get; set; }
+
+        /// <summary>
+        /// Controls whether orphaned server responses are collected and logged.
         /// <c>true</c> if orphaned server responses are logged; otherwise, <c>false</c>.
+        /// </summary>
+        /// <value>
+        /// <c>true</c> if orphaned server responses are logged; otherwise, <c>false</c>.///
         /// </value>
         bool OrphanedResponseLoggingEnabled { get; set; }
+
+        /// <summary>
+        /// If <see cref="EnableCertificateAuthentication"/> is true, certificate revocation list
+        /// will be checked during authentication. The default is disabled (false).
+        /// </summary>
+        /// <remarks>Only applies to .NET 4.6 and higher (and core).</remarks>
+        bool EnableCertificateRevocation { get; set; }
+
+        /// <summary>
+        /// Enables X509 authentication with the Couchbase cluster.
+        /// </summary>
+        bool EnableCertificateAuthentication { get; set; }
+
+        /// <summary>
+        /// The timeout for each HTTP Analytics query request.
+        /// </summary>
+        /// <remarks>The default is 75000ms.</remarks>
+        /// <remarks>The value must be greater than Zero.</remarks>
+        uint AnalyticsRequestTimeout { get; set; }
     }
 }
 

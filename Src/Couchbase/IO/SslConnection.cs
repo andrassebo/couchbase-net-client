@@ -1,4 +1,5 @@
-﻿using System;
+using System;
+using System.IO;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Runtime.ExceptionServices;
@@ -8,6 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Couchbase.Configuration.Client;
 using Couchbase.IO.Converters;
+using Couchbase.IO.Operations;
 using Couchbase.IO.Operations.Errors;
 using Couchbase.IO.Utils;
 using Couchbase.Utils;
@@ -18,11 +20,15 @@ namespace Couchbase.IO
     public class SslConnection : ConnectionBase
     {
         private readonly SslStream _sslStream;
+        private readonly IOBuffer _buffer;
 
         public SslConnection(IConnectionPool connectionPool, Socket socket, IByteConverter converter, BufferAllocator allocator)
-            : this(connectionPool, socket, new SslStream(new NetworkStream(socket), true, ServerCertificateValidationCallback), converter, allocator)
+            : this(connectionPool,
+                socket,
+                new SslStream(new NetworkStream(socket), true, GetCertificateCallback(connectionPool.Configuration.ClientConfiguration)),
+                converter,
+                allocator)
         {
-
         }
 
         public SslConnection(IConnectionPool connectionPool, Socket socket, SslStream sslStream, IByteConverter converter, BufferAllocator allocator)
@@ -31,6 +37,16 @@ namespace Couchbase.IO
             ConnectionPool = connectionPool;
             _sslStream = sslStream;
             Configuration = ConnectionPool.Configuration;
+            _buffer = new IOBuffer(new byte[Configuration.BufferSize], 0, Configuration.BufferSize);
+        }
+
+        private static RemoteCertificateValidationCallback GetCertificateCallback(ClientConfiguration config)
+        {
+            if(config.KvServerCertificateValidationCallback == null)
+            {
+                return ServerCertificateValidationCallback;
+            }
+            return config.KvServerCertificateValidationCallback;
         }
 
         private static bool ServerCertificateValidationCallback(object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors sslPolicyErrors)
@@ -63,7 +79,10 @@ namespace Couchbase.IO
                             throw new NullConfigException("If BucketConfiguration.EnableCertificateAuthentication is true, CertificateFactory cannot be null.");
                         }
                         var certs = Configuration.ClientConfiguration.CertificateFactory();
-                        _sslStream.AuthenticateAsClientAsync(targetHost, certs, SslProtocols.Tls | SslProtocols.Tls11 | SslProtocols.Tls12, true).Wait();
+                        _sslStream.AuthenticateAsClientAsync(targetHost,
+                            certs,
+                            SslProtocols.Tls | SslProtocols.Tls11 | SslProtocols.Tls12,
+                            Configuration.ClientConfiguration.EnableCertificateRevocation).Wait();
                     }
                     else
                     {
@@ -87,7 +106,7 @@ namespace Couchbase.IO
             }
         }
 
-        public override async void SendAsync(byte[] request, Func<SocketAsyncState, Task> callback, ISpan span, ErrorMap errorMap)
+        public override async Task SendAsync(byte[] request, Func<SocketAsyncState, Task> callback, ISpan span, ErrorMap errorMap)
         {
             ExceptionDispatchInfo capturedException = null;
             SocketAsyncState state = null;
@@ -101,20 +120,22 @@ namespace Couchbase.IO
                     Buffer = request,
                     Completed = callback,
                     DispatchSpan = span,
-                    CorrelationId = CreateCorrelationId(opaque),
-                    ErrorMap = errorMap
+                    ConnectionId = ContextId,
+                    LocalEndpoint = LocalEndPoint.ToString(),
+                    ErrorMap = errorMap,
+                    Timeout = Configuration.SendTimeout
                 };
 
                 await _sslStream.WriteAsync(request, 0, request.Length).ContinueOnAnyContext();
 
-                state.SetIOBuffer(BufferAllocator.GetBuffer());
+                state.SetIOBuffer(_buffer);
                 state.BytesReceived = await _sslStream.ReadAsync(state.Buffer, state.BufferOffset, state.BufferLength).ContinueOnAnyContext();
 
                 //write the received buffer to the state obj
                 await state.Data.WriteAsync(state.Buffer, state.BufferOffset, state.BytesReceived).ContinueOnAnyContext();
 
                 state.BodyLength = Converter.ToInt32(state.Buffer, state.BufferOffset + HeaderIndexFor.BodyLength);
-                while (state.BytesReceived < state.BodyLength + 24)
+                while (state.BytesReceived < state.BodyLength + OperationHeader.Length)
                 {
                     var bufferLength = state.BufferLength - state.BytesSent < state.BufferLength
                         ? state.BufferLength - state.BytesSent
@@ -133,10 +154,6 @@ namespace Couchbase.IO
             finally
             {
                 ConnectionPool.Release(this);
-                if (state.IOBuffer != null)
-                {
-                    BufferAllocator.ReleaseBuffer(state.IOBuffer);
-                }
             }
 
             if (capturedException != null)
@@ -205,42 +222,37 @@ namespace Couchbase.IO
             {
                 Data = MemoryStreamFactory.GetMemoryStream(),
                 Opaque = opaque,
-                CorrelationId = CreateCorrelationId(opaque)
+                ConnectionId = ContextId,
+                LocalEndpoint = LocalEndPoint.ToString(),
+                Timeout = Configuration.SendTimeout
             };
 
             await _sslStream.WriteAsync(buffer, 0, buffer.Length, cancellationToken).ContinueOnAnyContext();
 
-            try
+            state.SetIOBuffer(_buffer);
+
+            while (state.BytesReceived < state.BodyLength + OperationHeader.Length)
             {
-                state.SetIOBuffer(BufferAllocator.GetBuffer());
+                cancellationToken.ThrowIfCancellationRequested();
 
-                while (state.BytesReceived < state.BodyLength + 24)
+                var bytesReceived = await _sslStream
+                    .ReadAsync(state.Buffer, state.BufferOffset, state.BufferLength, cancellationToken)
+                    .ContinueOnAnyContext();
+                state.BytesReceived += bytesReceived;
+
+                if (state.BytesReceived == 0)
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-
-                    var bytesReceived = await _sslStream.ReadAsync(state.Buffer, state.BufferOffset, state.BufferLength, cancellationToken).ContinueOnAnyContext();
-                    state.BytesReceived += bytesReceived;
-
-                    if (state.BytesReceived == 0)
-                    {
-                        // No more bytes were received, go ahead and exit the loop
-                        break;
-                    }
-                    if (state.BodyLength == 0)
-                    {
-                        // Reading header, so get the BodyLength
-                        state.BodyLength = Converter.ToInt32(state.Buffer, state.BufferOffset + HeaderIndexFor.Body);
-                    }
-
-                    state.Data.Write(state.Buffer, state.BufferOffset, bytesReceived);
+                    // No more bytes were received, go ahead and exit the loop
+                    break;
                 }
-            }
-            finally
-            {
-                if (state.IOBuffer != null)
+
+                if (state.BodyLength == 0)
                 {
-                    BufferAllocator.ReleaseBuffer(state.IOBuffer);
+                    // Reading header, so get the BodyLength
+                    state.BodyLength = Converter.ToInt32(state.Buffer, state.BufferOffset + HeaderIndexFor.Body);
                 }
+
+                state.Data.Write(state.Buffer, state.BufferOffset, bytesReceived);
             }
 
             return state.Data.ToArray();

@@ -67,11 +67,11 @@ namespace Couchbase.IO.Services
                     OperationHeader header;
                     ErrorCode errorCode;
 
-                    using (var span = Tracer.BuildSpan(operation, _connection, ConnectionPool.Configuration.BucketName).Start())
+                    using (var scope = Tracer.BuildSpan(operation, _connection, ConnectionPool.Configuration.BucketName).StartActive())
                     {
                         response = _connection.Send(request);
                         header = response.CreateHeader(ErrorMap, out errorCode);
-                        span.SetPeerLatencyTag(header.GetServerDuration(response));
+                        scope.Span.SetPeerLatencyTag(header.GetServerDuration(response));
                     }
 
                     operation.Read(response, header, errorCode);
@@ -114,11 +114,11 @@ namespace Couchbase.IO.Services
                     OperationHeader header;
                     ErrorCode errorCode;
 
-                    using (var span = Tracer.BuildSpan(operation, _connection, ConnectionPool.Configuration.BucketName).Start())
+                    using (var scope = Tracer.BuildSpan(operation, _connection, ConnectionPool.Configuration.BucketName).StartActive())
                     {
                         response = _connection.Send(request);
                         header = response.CreateHeader(ErrorMap, out errorCode);
-                        span.SetPeerLatencyTag(header.GetServerDuration(response));
+                        scope.Span.SetPeerLatencyTag(header.GetServerDuration(response));
                     }
 
                     operation.Read(response, header, errorCode);
@@ -161,7 +161,7 @@ namespace Couchbase.IO.Services
                 {
                     var request = await operation.WriteAsync(Tracer, ConnectionPool.Configuration.BucketName).ContinueOnAnyContext();
                     var span = Tracer.BuildSpan(operation, connection, ConnectionPool.Configuration.BucketName).Start();
-                    connection.SendAsync(request, operation.Completed, span, ErrorMap);
+                    await connection.SendAsync(request, operation.Completed, span, ErrorMap).ContinueOnAnyContext();
                 }
                 else
                 {
@@ -183,7 +183,7 @@ namespace Couchbase.IO.Services
 
             if (capturedException != null)
             {
-                await HandleException(capturedException, operation, EndPoint).ConfigureAwait(false);
+                await HandleException(capturedException, operation, EndPoint).ContinueOnAnyContext();
             }
         }
 
@@ -236,7 +236,7 @@ namespace Couchbase.IO.Services
 
             if (capturedException != null)
             {
-                await HandleException(capturedException, operation, EndPoint).ConfigureAwait(false);
+                await HandleException(capturedException, operation, EndPoint).ContinueOnAnyContext();
             }
         }
 

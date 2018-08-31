@@ -1,33 +1,86 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.Linq;
+using System.Threading;
 using OpenTracing;
+using OpenTracing.Tag;
 
 namespace Couchbase.Tracing
 {
     internal class Span : ISpan
     {
+        private static long _traceId;
+
+        private static string NextTraceId()
+        {
+            return Interlocked.Increment(ref _traceId).ToString(CultureInfo.InvariantCulture);
+        }
+
+        private static long _spanId;
+
+        private static string NextSpanId()
+        {
+            return Interlocked.Increment(ref _spanId).ToString(CultureInfo.InvariantCulture);
+        }
+
+        private readonly SemaphoreSlim _lock = new SemaphoreSlim(1, 1);
         private readonly long _startTimestamp;
         private long? _endTimestamp;
+        private readonly List<Span> _spans = new List<Span>();
 
-        internal ITracer Tracer { get; }
+        internal ThresholdLoggingTracer Tracer { get; }
         internal List<Reference> References { get; }
 
         public string OperationName { get; private set; }
         public ISpanContext Context { get; }
         public Dictionary<string, object> Tags { get; }
         public Dictionary<string, string> Baggage { get; } = new Dictionary<string, string>();
-        public List<Span> Spans { get; } = new List<Span>();
 
-        internal Span(ITracer tracer, string operationName, ISpanContext context, long startTimestamp, Dictionary<string, object> tags, List<Reference> references)
+        public List<Span> Spans
+        {
+            get
+            {
+                // needs lock to prevent concurrent access
+                _lock.Wait();
+                try
+                {
+                    return _spans.ToList();
+                }
+                finally
+                {
+                    _lock.Release(1);
+                }
+            }
+        }
+
+        public string ParentId { get; }
+
+        internal Span(ThresholdLoggingTracer tracer, string operationName, ISpanContext parentContext, long startTimestamp, Dictionary<string, object> tags, List<Reference> references)
         {
             Tracer = tracer;
             OperationName = operationName;
-            Context = context;
             _startTimestamp = startTimestamp;
             Tags = tags ?? new Dictionary<string, object>();
             References = references ?? new List<Reference>();
+
+            if (parentContext == null)
+            {
+                // new root span
+                ParentId = null;
+                Context = new SpanContext(NextTraceId(), NextSpanId(), null);
+            }
+            else
+            {
+                // sub-span
+                ParentId = parentContext.SpanId;
+                Context = new SpanContext(
+                    parentContext.TraceId,
+                    NextSpanId(),
+                    References.SelectMany(x => x.Context.GetBaggageItems())
+                );
+            }
         }
 
         public bool IsRootSpan => !References.Any();
@@ -78,6 +131,30 @@ namespace Couchbase.Tracing
             return this;
         }
 
+        public ISpan SetTag(BooleanTag tag, bool value)
+        {
+            Tags.Add(tag.Key, value);
+            return this;
+        }
+
+        public ISpan SetTag(IntOrStringTag tag, string value)
+        {
+            Tags.Add(tag.Key, value);
+            return this;
+        }
+
+        public ISpan SetTag(IntTag tag, int value)
+        {
+            Tags.Add(tag.Key, value);
+            return this;
+        }
+
+        public ISpan SetTag(StringTag tag, string value)
+        {
+            Tags.Add(tag.Key, value);
+            return this;
+        }
+
         public ISpan Log(IEnumerable<KeyValuePair<string, object>> fields)
         {
             return Log(DateTimeOffset.UtcNow, fields);
@@ -120,24 +197,43 @@ namespace Couchbase.Tracing
             }
 
             _endTimestamp = Stopwatch.GetTimestamp();
-
-            if (Tracer is ThresholdLoggingTracer tracer)
-            {
-                tracer.ReportSpan(this);
-            }
+            Tracer.ReportSpan(this);
         }
 
         public void Finish(DateTimeOffset finishTimestamp)
         {
-            if (!_endTimestamp.HasValue)
+            if (_endTimestamp.HasValue)
             {
-                _endTimestamp = finishTimestamp.Ticks;
+                // span has already been stopped ..
+                return;
             }
+
+            _endTimestamp = finishTimestamp.Ticks;
+            Tracer.ReportSpan(this);
         }
 
         public void Dispose()
         {
             Finish();
+        }
+
+        public void AddSpan(Span span)
+        {
+            _lock.Wait();
+            try
+            {
+                if (_endTimestamp.HasValue)
+                {
+                    // span has already finsihed, can't add more sub-spans
+                    return;
+                }
+
+                _spans.Add(span);
+            }
+            finally
+            {
+                _lock.Release(1);
+            }
         }
     }
 }

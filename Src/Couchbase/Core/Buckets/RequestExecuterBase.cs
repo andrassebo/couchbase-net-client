@@ -1,6 +1,5 @@
 using Couchbase.Logging;
 using Couchbase.Configuration;
-using Couchbase.Core.Diagnostics;
 using Couchbase.IO;
 using Couchbase.IO.Operations;
 using Couchbase.N1QL;
@@ -28,8 +27,6 @@ namespace Couchbase.Core.Buckets
         protected static readonly ILog Log = LogManager.GetLogger<RequestExecuterBase>();
         protected readonly string BucketName;
         protected readonly IClusterController ClusterController;
-        protected readonly Func<TimingLevel, object, IOperationTimer> Timer;
-        protected volatile bool TimingEnabled;
         protected readonly ConcurrentDictionary<uint, IOperation> Pending;
         protected readonly int VBucketRetrySleepTime;
 
@@ -39,11 +36,9 @@ namespace Couchbase.Core.Buckets
         protected RequestExecuterBase(IClusterController clusterController, IConfigInfo configInfo, string bucketName, ConcurrentDictionary<uint, IOperation> pending)
         {
             ClusterController = clusterController;
-            TimingEnabled = ClusterController.Configuration.EnableOperationTiming;
             BucketName = bucketName;
             OperationLifeSpan = (int)ClusterController.Configuration.DefaultOperationLifespan;
             Pending = pending;
-            Timer = ClusterController.Configuration.Timer;
             VBucketRetrySleepTime = (int)configInfo.ClientConfig.VBucketRetrySleepTime;
             ConfigInfo = configInfo;
         }
@@ -253,11 +248,12 @@ namespace Couchbase.Core.Buckets
         /// Sends a <see cref="IFtsQuery" /> request to an FTS enabled node and returns the <see cref="ISearchQueryResult" />response.
         /// </summary>
         /// <param name="searchQuery"></param>
+        /// <param name="cancellationToken">A cancellation token.</param>
         /// <returns>
         /// A <see cref="Task{ISearchQueryResult}" /> representing the response from the FTS service.
         /// </returns>
         /// <exception cref="System.NotImplementedException"></exception>
-        public virtual Task<ISearchQueryResult> SendWithRetryAsync(SearchQuery searchQuery)
+        public virtual Task<ISearchQueryResult> SendWithRetryAsync(SearchQuery searchQuery, CancellationToken cancellationToken)
         {
             throw new NotImplementedException();
         }
@@ -524,7 +520,7 @@ namespace Couchbase.Core.Buckets
                     node.EndPoint);
 
                 IOperationResult<BucketConfig> result;
-                using (Tracer.StartParentSpan(operation, ConfigInfo.BucketName, true))
+                using (Tracer.StartParentScope(operation, ConfigInfo.BucketName, true))
                 {
                     result = node.Send(operation);
                 }
@@ -632,7 +628,7 @@ namespace Couchbase.Core.Buckets
             return result;
         }
 
-        protected static async Task<TResult> RetryRequestAsync<TRequest, TResult>(
+        protected internal static async Task<TResult> RetryRequestAsync<TRequest, TResult>(
             Func<IServer> getServer,
             Func<IServer, TRequest, CancellationToken, Task<TResult>> sendRequest,
             Func<TRequest, TResult, bool> canRetry,
@@ -646,10 +642,7 @@ namespace Couchbase.Core.Buckets
 
             using (var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
             {
-                if (!cancellationToken.CanBeCanceled)
-                {
-                    cts.CancelAfter(TimeSpan.FromMilliseconds(requestTimeout));
-                }
+                cts.CancelAfter(TimeSpan.FromMilliseconds(requestTimeout));
 
                 do
                 {

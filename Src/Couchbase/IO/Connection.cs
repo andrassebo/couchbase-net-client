@@ -1,8 +1,9 @@
-﻿using System;
+using System;
 using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using Couchbase.IO.Converters;
+using Couchbase.IO.Operations;
 using Couchbase.IO.Operations.Errors;
 using Couchbase.IO.Utils;
 using Couchbase.Utils;
@@ -38,7 +39,7 @@ namespace Couchbase.IO
             }
         }
 
-        public override void SendAsync(byte[] buffer, Func<SocketAsyncState, Task> callback, ISpan span, ErrorMap errorMap)
+        public override Task SendAsync(byte[] buffer, Func<SocketAsyncState, Task> callback, ISpan span, ErrorMap errorMap)
         {
             SocketAsyncState state = null;
             try
@@ -52,8 +53,10 @@ namespace Couchbase.IO
                     Completed = callback,
                     SendOffset = _eventArgs.Offset,
                     DispatchSpan = span,
-                    CorrelationId = CreateCorrelationId(opaque),
-                    ErrorMap = errorMap
+                    ConnectionId = ContextId,
+                    LocalEndpoint = LocalEndPoint.ToString(),
+                    ErrorMap = errorMap,
+                    Timeout = Configuration.SendTimeout
                 };
 
                 _eventArgs.UserToken = state;
@@ -92,6 +95,8 @@ namespace Couchbase.IO
                     Log.Debug(e);
                 }
             }
+
+            return Task.FromResult(0);
         }
 
         /// <summary>
@@ -109,7 +114,9 @@ namespace Couchbase.IO
                 Opaque = opaque,
                 Buffer = buffer,
                 SendOffset = _eventArgs.Offset,
-                CorrelationId = CreateCorrelationId(opaque)
+                ConnectionId = ContextId,
+                LocalEndpoint = LocalEndPoint.ToString(),
+                Timeout = Configuration.SendTimeout
             };
 
             Log.Debug("Sending opaque{0} on {1}", state.Opaque, Identity);
@@ -279,7 +286,7 @@ namespace Couchbase.IO
                     {
                         state.BodyLength = Converter.ToInt32(state.Data.ToArray(), HeaderIndexFor.Body);
                     }
-                    if (state.BytesReceived < state.BodyLength + 24)
+                    if (state.BytesReceived < state.BodyLength + OperationHeader.Length)
                     {
                         var bufferSize = state.BodyLength < Configuration.BufferSize
                             ? state.BodyLength

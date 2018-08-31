@@ -1,14 +1,24 @@
-﻿namespace Couchbase.Core.Diagnostics
+using System.Collections.Generic;
+using System.Linq;
+using Couchbase.Core;
+using Moq;
+
+namespace Couchbase.UnitTests.Collections
 {
-    public enum TimingLevel
+    public static class MockHelper
     {
-        /// <summary>
-        /// Disabled - no timing information will be logged
-        /// </summary>
-        None,
-        One,
-        Two,
-        Three
+        public static Mock<IBucket> CreateBucket<T>(string documentKey, params T[] items)
+        {
+            var result = new Mock<IOperationResult<List<T>>>();
+            result.SetupGet(x => x.Success).Returns(true);
+            result.SetupGet(x => x.Value).Returns(items.ToList());
+
+            var bucket = new Mock<IBucket>();
+            bucket.Setup(x => x.Exists(documentKey)).Returns(true);
+            bucket.Setup(x => x.Get<List<T>>(documentKey)).Returns(result.Object);
+
+            return bucket;
+        }
     }
 }
 
@@ -17,7 +27,7 @@
 /* ************************************************************
  *
  *    @author Couchbase <info@couchbase.com>
- *    @copyright 2017 Couchbase, Inc.
+ *    @copyright 2015 Couchbase, Inc.
  *
  *    Licensed under the Apache License, Version 2.0 (the "License");
  *    you may not use this file except in compliance with the License.

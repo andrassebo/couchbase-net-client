@@ -3,7 +3,7 @@ using System.Net.Http;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Couchbase.Configuration.Client;
+using Couchbase.Configuration;
 using Couchbase.Logging;
 using Couchbase.Tracing;
 using Couchbase.Utils;
@@ -13,10 +13,13 @@ namespace Couchbase.Views
     internal class StreamingViewClient : ViewClientBase
     {
         private static readonly ILog Log = LogManager.GetLogger<StreamingViewClient>();
+        private readonly int? _viewTimeout;
 
-        public StreamingViewClient(HttpClient httpClient, IDataMapper mapper, ClientConfiguration configuration)
-            : base(httpClient, mapper, configuration)
+        public StreamingViewClient(HttpClient httpClient, IDataMapper mapper, ConfigContextBase context)
+            : base(httpClient, mapper, context)
         {
+            _viewTimeout = context.ClientConfig?.ViewRequestTimeout * 1000; // convert millis to micros
+
             // set timeout to infinite so we can stream results without the connection
             // closing part way through
             httpClient.Timeout = Timeout.InfiniteTimeSpan;
@@ -34,7 +37,7 @@ namespace Couchbase.Views
             var viewResult = new StreamingViewResult<T>();
 
             string body;
-            using (ClientConfiguration.Tracer.BuildSpan(query, CouchbaseOperationNames.RequestEncoding).Start())
+            using (ClientConfiguration.Tracer.BuildSpan(query, CouchbaseOperationNames.RequestEncoding).StartActive())
             {
                 body = query.CreateRequestBody();
             }
@@ -46,7 +49,7 @@ namespace Couchbase.Views
                 var content = new StringContent(body, Encoding.UTF8, MediaType.Json);
 
                 HttpResponseMessage response;
-                using (ClientConfiguration.Tracer.BuildSpan(query, CouchbaseOperationNames.DispatchToServer).Start())
+                using (ClientConfiguration.Tracer.BuildSpan(query, CouchbaseOperationNames.DispatchToServer).StartActive())
                 {
                     response = await HttpClient.PostAsync(uri, content).ContinueOnAnyContext();
                 }
@@ -58,7 +61,7 @@ namespace Couchbase.Views
                         response.StatusCode,
                         Success,
                         await response.Content.ReadAsStreamAsync().ContinueOnAnyContext(),
-                        ClientConfiguration.Tracer.BuildSpan(query, CouchbaseOperationNames.ResponseDecoding).Start()
+                        ClientConfiguration.Tracer.BuildSpan(query, CouchbaseOperationNames.ResponseDecoding).StartActive().Span
                     );
                 }
                 else
@@ -80,10 +83,15 @@ namespace Couchbase.Views
                     return true;
                 });
             }
-            catch (TaskCanceledException e)
+            catch (OperationCanceledException e)
             {
-                const string error = "The request has timed out.";
-                ProcessError(e, error, viewResult);
+                var operationContext = OperationContext.CreateViewContext(query.BucketName, uri?.Authority);
+                if (_viewTimeout.HasValue)
+                {
+                    operationContext.TimeoutMicroseconds = (uint) _viewTimeout.Value;
+                }
+
+                ProcessError(e, operationContext.ToString(), viewResult);
                 Log.Error(uri.ToString(), e);
             }
             catch (HttpRequestException e)

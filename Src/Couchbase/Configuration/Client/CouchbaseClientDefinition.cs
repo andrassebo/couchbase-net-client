@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Couchbase.Authentication;
 using Couchbase.Configuration.Server.Providers;
@@ -181,6 +181,13 @@ namespace Couchbase.Configuration.Client
         /// <remarks>The default is 75000ms.</remarks>
         /// <remarks>The value must be greater than Zero.</remarks>
         public uint QueryRequestTimeout { get; set; }
+
+        /// <summary>
+        /// The timeout for each HTTP Analytics query request.
+        /// </summary>
+        /// <remarks>The default is 75000ms.</remarks>
+        /// <remarks>The value must be greater than Zero.</remarks>
+        public uint AnalyticsRequestTimeout { get; set; }
 
         /// <summary>
         /// If true, writes the elasped client time, elasped cluster time and query strement for a N1QL query request to the log appender. Disabled by default.
@@ -419,20 +426,41 @@ namespace Couchbase.Configuration.Client
         public ServerConfigurationProviders ConfigurationProviders { get; set; }
 
         /// <summary>
-        /// Controls whether the <see cref="ThresholdLoggingTracer"/> is used when configuring the client.
+        /// Controls whether the operation tracing is enabled within the client.
         /// </summary>
         /// <value>
-        /// <c>true</c> if the <see cref="ThresholdLoggingTracer"/> is to be used; otherwise, <c>false</c>.
+        /// <c>true</c> if operation tracing is enabled; otherwise, <c>false</c>.
         /// </value>
-        public bool ResponseTimeObservabilityEnabled { get; set; }
+        public bool OperationTracingEnabled { get; set; }
 
         /// <summary>
-        /// Controls whether orphaned server responses are recorded and logged.
+        /// Gets or sets a value indicating whether KV operation server duration times are collected during processing.
         /// </summary>
         /// <value>
+        /// <c>true</c> if server durations are collected otherwise, <c>false</c>.
+        /// </value>
+        public bool OperationTracingServerDurationEnabled { get; set; }
+
+        /// <summary>
+        /// Controls whether orphaned server responses are collected and logged.
         /// <c>true</c> if orphaned server responses are logged; otherwise, <c>false</c>.
+        /// </summary>
+        /// <value>
+        /// <c>true</c> if orphaned server responses are logged; otherwise, <c>false</c>.///
         /// </value>
         public bool OrphanedResponseLoggingEnabled { get; set; }
+
+        /// <summary>
+        /// If <see cref="EnableCertificateAuthentication"/> is true, certificate revocation list
+        /// will be checked during authentication. The default is disabled (false).
+        /// </summary>
+        /// <remarks>Only applies to .NET 4.6 and higher (and core).</remarks>
+        public bool EnableCertificateRevocation { get; set; }
+
+        /// <summary>
+        /// Enables X509 authentication with the Couchbase cluster.
+        /// </summary>
+        public bool EnableCertificateAuthentication { get; set; }
 
         public CouchbaseClientDefinition()
         {
@@ -451,6 +479,7 @@ namespace Couchbase.Configuration.Client
             EnableConfigHeartBeat = ClientConfiguration.Defaults.EnableConfigHeartBeat;
             ViewRequestTimeout = (int)ClientConfiguration.Defaults.ViewRequestTimeout;
             QueryRequestTimeout = ClientConfiguration.Defaults.QueryRequestTimeout;
+            AnalyticsRequestTimeout = ClientConfiguration.Defaults.AnalyticsRequestTimeout;
             EnableQueryTiming = ClientConfiguration.Defaults.EnableQueryTiming;
             SearchRequestTimeout = ClientConfiguration.Defaults.SearchRequestTimeout;
             Expect100Continue = ClientConfiguration.Defaults.Expect100Continue;
@@ -474,8 +503,11 @@ namespace Couchbase.Configuration.Client
             ConfigPollInterval = ClientConfiguration.Defaults.ConfigPollInterval;
             ForceSaslPlain = ClientConfiguration.Defaults.ForceSaslPlain;
             ConfigurationProviders = ServerConfigurationProviders.CarrierPublication | ServerConfigurationProviders.HttpStreaming;
-            ResponseTimeObservabilityEnabled = ClientConfiguration.Defaults.ResponseTimeObservabiltyEnabled;
+            OperationTracingEnabled = ClientConfiguration.Defaults.OperationTracingEnabled;
+            OperationTracingServerDurationEnabled = ClientConfiguration.Defaults.OperationTracingServerDurationEnabled;
             OrphanedResponseLoggingEnabled = ClientConfiguration.Defaults.OrphanedResponseLoggingEnabled;
+            EnableCertificateAuthentication = ClientConfiguration.Defaults.EnableCertificateAuthentication;
+            EnableCertificateRevocation = ClientConfiguration.Defaults.EnableCertificateRevocation;
         }
 
         #region Additional ICouchbaseClientDefinition Implementations

@@ -1,13 +1,13 @@
-﻿namespace Couchbase.Tracing
+namespace Couchbase.Tracing
 {
-    internal class NullOrphanedOperationReporter : IOrphanedOperationReporter
+    internal class NullOrphanedResponseLogger : IOrphanedResponseLogger
     {
-        public static IOrphanedOperationReporter Instance = new NullOrphanedOperationReporter();
+        public static IOrphanedResponseLogger Instance = new NullOrphanedResponseLogger();
 
-        private NullOrphanedOperationReporter()
+        private NullOrphanedResponseLogger()
         { }
 
-        public void Add(string endpoint, string operationId, long? serverDuration)
+        public void Add(OperationContext context)
         { }
     }
 }

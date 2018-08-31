@@ -11,7 +11,6 @@ using Couchbase.Core;
 using Couchbase.Core.Buckets;
 using Couchbase.Core.Transcoders;
 using Couchbase.IO;
-using Couchbase.IO.Converters;
 using Couchbase.Utils;
 
 namespace Couchbase.Configuration
@@ -56,10 +55,10 @@ namespace Couchbase.Configuration
         /// <exception cref="CouchbaseBootstrapException">Condition.</exception>
         public override void LoadConfig(IBucketConfig bucketConfig, bool force = false)
         {
-            if (bucketConfig == null) throw new ArgumentNullException("bucketConfig");
+            if (bucketConfig == null) throw new ArgumentNullException(nameof(bucketConfig));
 
             var nodes = bucketConfig.GetNodes();
-            if (BucketConfig == null || !nodes.AreEqual(_bucketConfig.GetNodes()) || force)
+            if (BucketConfig == null || !nodes.AreEqual(BucketConfig.GetNodes()) || force)
             {
                 var clientBucketConfig = ClientConfig.BucketConfigs[bucketConfig.Name];
                 var servers = new Dictionary<IPEndPoint, IServer>();
@@ -72,10 +71,18 @@ namespace Couchbase.Configuration
                     {
                         if (adapter.IsDataNode) //a data node so create a connection pool
                         {
-                            var uri = UrlUtil.GetBaseUri(adapter, clientBucketConfig);
-                            var ioService = CreateIOService(clientBucketConfig.ClonePoolConfiguration(uri), endpoint);
-                            var server = new Core.Server(ioService, adapter, ClientConfig, bucketConfig, Transcoder);
-                            servers.Add(endpoint, server);
+                            if(Servers.TryGetValue(endpoint, out IServer cachedServer))
+                            {
+                                servers.Add(endpoint, cachedServer);
+                            }
+                            else
+                            {
+                                var uri = UrlUtil.GetBaseUri(adapter, clientBucketConfig);
+                                var ioService = CreateIOService(clientBucketConfig.ClonePoolConfiguration(uri),
+                                    endpoint);
+                                var server = new Core.Server(ioService, adapter, Transcoder, this);
+                                servers.Add(endpoint, server);
+                            }
                         }
                     }
                     catch (Exception e)
@@ -99,15 +106,7 @@ namespace Couchbase.Configuration
                 Interlocked.Exchange(ref DataNodes, newDataNodes);
                 IsDataCapable = newDataNodes.Count > 0;
 
-                var old = Interlocked.Exchange(ref Servers, servers);
-                if (old != null)
-                {
-                    foreach (var server in old.Values)
-                    {
-                        server.Dispose();
-                    }
-                    old.Clear();
-                }
+                SwapServers(servers);
             }
             Interlocked.Exchange(ref KeyMapper, new KetamaKeyMapper(Servers));
             Interlocked.Exchange(ref _bucketConfig, bucketConfig);
@@ -128,7 +127,7 @@ namespace Couchbase.Configuration
                     {
                         var uri = UrlUtil.GetBaseUri(adapter, clientBucketConfig);
                         var ioService = CreateIOService(clientBucketConfig.ClonePoolConfiguration(uri), endpoint);
-                        var server = new Core.Server(ioService, adapter, ClientConfig, BucketConfig, Transcoder);
+                        var server = new Core.Server(ioService, adapter, Transcoder, this);
                         servers.Add(endpoint, server);
                     }
                 }
@@ -153,17 +152,8 @@ namespace Couchbase.Configuration
 
             Interlocked.Exchange(ref DataNodes, newDataNodes);
             IsDataCapable = newDataNodes.Count > 0;
-
-            var old = Interlocked.Exchange(ref Servers, servers);
+            SwapServers(servers);
             Interlocked.Exchange(ref KeyMapper, new KetamaKeyMapper(Servers));
-            if (old != null)
-            {
-                foreach (var server in old.Values)
-                {
-                    server.Dispose();
-                }
-                old.Clear();
-            }
         }
     }
 }

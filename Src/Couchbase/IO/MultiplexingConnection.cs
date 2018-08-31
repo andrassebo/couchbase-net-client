@@ -1,14 +1,15 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
+using Couchbase.Core.Monitoring;
 using Couchbase.IO.Converters;
 using Couchbase.IO.Operations;
 using Couchbase.IO.Operations.Errors;
 using Couchbase.IO.Utils;
+using Couchbase.Tracing;
 using Couchbase.Utils;
 using OpenTracing;
 
@@ -20,7 +21,7 @@ namespace Couchbase.IO
     public class MultiplexingConnection : ConnectionBase
     {
         private readonly ConcurrentDictionary<uint, IState> _statesInFlight;
-        private readonly Queue<SyncState> _statePool;
+        private readonly ConcurrentQueue<SyncState> _statePool;
         // ReSharper disable once PrivateFieldCanBeConvertedToLocalVariable
         private readonly Thread _receiveThread;
         private byte[] _receiveBuffer;
@@ -38,7 +39,7 @@ namespace Couchbase.IO
             MaxCloseAttempts = Configuration.MaxCloseAttempts;
 
             _statesInFlight = new ConcurrentDictionary<uint, IState>();
-            _statePool = new Queue<SyncState>();
+            _statePool = new ConcurrentQueue<SyncState>();
 
             //allocate a buffer
             _receiveBuffer = new byte[Configuration.BufferSize];
@@ -50,7 +51,7 @@ namespace Couchbase.IO
             _receiveThread.Start();
         }
 
-        public override void SendAsync(byte[] request, Func<SocketAsyncState, Task> callback, ISpan span, ErrorMap errorMap)
+        public override Task SendAsync(byte[] request, Func<SocketAsyncState, Task> callback, ISpan span, ErrorMap errorMap)
         {
             var opaque = Converter.ToUInt32(request, HeaderIndexFor.Opaque);
             var state = new AsyncState
@@ -60,8 +61,10 @@ namespace Couchbase.IO
                 Converter = Converter,
                 EndPoint = (IPEndPoint)EndPoint,
                 DispatchSpan = span,
-                CorrelationId = CreateCorrelationId(opaque),
-                ErrorMap = errorMap
+                ConnectionId = ContextId,
+                ErrorMap = errorMap,
+                Timeout = Configuration.SendTimeout,
+                LocalEndpoint = LocalEndPoint.ToString()
             };
 
             _statesInFlight.TryAdd(state.Opaque, state);
@@ -90,6 +93,8 @@ namespace Couchbase.IO
                     HandleDisconnect(e);
                 }
             }
+
+            return Task.FromResult(0);
         }
 
         /// <summary>
@@ -144,12 +149,9 @@ namespace Couchbase.IO
         /// <returns>An <see cref="SyncState"/> object representing the state of the request.</returns>
         private SyncState AcquireState()
         {
-            lock (_statePool)
+            if (_statePool.TryDequeue(out var state))
             {
-                if (_statePool.Count > 0)
-                {
-                    return _statePool.Dequeue();
-                }
+                return state;
             }
             return new SyncState();
         }
@@ -161,10 +163,7 @@ namespace Couchbase.IO
         private void ReleaseState(SyncState state)
         {
             state.CleanForReuse();
-            lock (_statePool)
-            {
-                _statePool.Enqueue(state);
-            }
+            _statePool.Enqueue(state);
         }
 
         /// <summary>
@@ -196,7 +195,7 @@ namespace Couchbase.IO
                 HandleDisconnect(new RemoteHostClosedException(
                     ExceptionUtil.GetMessage(ExceptionUtil.RemoteHostClosedMsg, EndPoint)));
             }
-#if NET45
+#if NET452
             catch (ThreadAbortException) {}
 #endif
             catch (ObjectDisposedException) {}
@@ -223,7 +222,7 @@ namespace Couchbase.IO
             var parsedOffset = 0;
             while (parsedOffset + HeaderIndexFor.BodyLength < _receiveBufferLength)
             {
-                var responseSize = Converter.ToInt32(_receiveBuffer, parsedOffset + HeaderIndexFor.BodyLength) + 24;
+                var responseSize = Converter.ToInt32(_receiveBuffer, parsedOffset + HeaderIndexFor.BodyLength) + OperationHeader.Length;
                 if (parsedOffset + responseSize > _receiveBufferLength) break;
 
                 var opaque = Converter.ToUInt32(_receiveBuffer, parsedOffset + HeaderIndexFor.Opaque);
@@ -238,11 +237,11 @@ namespace Couchbase.IO
                 }
                 else
                 {
-                    // orphaned response
-                    var correlationId = CreateCorrelationId(opaque);
-                    var header = response.CreateHeader();
-                    var serverDuration = header.GetServerDuration(response);
-                    Configuration.ClientConfiguration.OrphanedOperationReporter.Add(EndPoint.ToString(), correlationId, serverDuration);
+                    // create orphaned response context
+                    var context = CreateOperationContext(opaque);
+
+                    // send to orphaned response reporter
+                    Configuration.ClientConfiguration.OrphanedResponseLogger.Add(context);
                 }
 
                 UpdateLastActivity();
@@ -297,16 +296,24 @@ namespace Couchbase.IO
                     {
                         Socket.Dispose();
                     }
+                }
 
-                    //free up all states in flight
-                    lock (_statesInFlight)
+                // free up all states in flight
+                lock (_statesInFlight)
+                {
+                    foreach (var state in _statesInFlight.Values)
                     {
-                        foreach (IState state in _statesInFlight.Values)
-                        {
-                            //this hould have a correct handling where some kind of exception is thrown in the unblocked method
-                            var state1 = state;
-                            state1.Complete(null);
-                        }
+                        state.Complete(null);
+                        state.Dispose();
+                    }
+                }
+
+                // clean up SyncState pool
+                lock (_statePool)
+                {
+                    while (_statePool.TryDequeue(out var state))
+                    {
+                        state.Dispose();
                     }
                 }
             }

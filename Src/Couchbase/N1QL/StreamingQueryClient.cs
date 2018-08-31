@@ -1,9 +1,10 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using Couchbase.Configuration;
 using Couchbase.Logging;
 using Couchbase.Configuration.Client;
 using Couchbase.Core.Diagnostics;
@@ -17,14 +18,15 @@ namespace Couchbase.N1QL
     {
         private static readonly ILog Log = LogManager.GetLogger<QueryClient>();
 
-        public StreamingQueryClient(HttpClient httpClient, IDataMapper dataMapper, ClientConfiguration clientConfig)
-            : base(httpClient, dataMapper, clientConfig)
+        public StreamingQueryClient(HttpClient httpClient, IDataMapper dataMapper, CouchbaseConfigContext context)
+            : base(httpClient, dataMapper, context)
         {
             HttpClient.Timeout = Timeout.InfiniteTimeSpan;
         }
 
-        public StreamingQueryClient(HttpClient httpClient, IDataMapper dataMapper, ClientConfiguration clientConfig,
-            ConcurrentDictionary<string, QueryPlan> queryCache) : base(httpClient, dataMapper, clientConfig, queryCache)
+        public StreamingQueryClient(HttpClient httpClient, IDataMapper dataMapper,
+            ConcurrentDictionary<string, QueryPlan> queryCache, ConfigContextBase context)
+            : base(httpClient, dataMapper,  queryCache, context)
         {
             HttpClient.Timeout = Timeout.InfiniteTimeSpan;
         }
@@ -44,7 +46,7 @@ namespace Couchbase.N1QL
             ApplyCredentials(queryRequest);
 
             string body;
-            using (ClientConfiguration.Tracer.BuildSpan(queryRequest, CouchbaseOperationNames.RequestEncoding).Start())
+            using (ClientConfiguration.Tracer.BuildSpan(queryRequest, CouchbaseOperationNames.RequestEncoding).StartActive())
             {
                 body = queryRequest.GetFormValuesAsJson();
             }
@@ -58,7 +60,7 @@ namespace Couchbase.N1QL
                     Log.Trace("Sending query cid{0}: {1}", queryRequest.CurrentContextId, baseUri);
 
                     HttpResponseMessage response;
-                    using (ClientConfiguration.Tracer.BuildSpan(queryRequest, CouchbaseOperationNames.DispatchToServer).Start())
+                    using (ClientConfiguration.Tracer.BuildSpan(queryRequest, CouchbaseOperationNames.DispatchToServer).StartActive())
                     {
                         response = await HttpClient.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ContinueOnAnyContext();
                     }
@@ -76,6 +78,17 @@ namespace Couchbase.N1QL
                         Log.Trace("Received query cid{0}: {1}", queryRequest.CurrentContextId, queryResult.HttpStatusCode);
                     }
                     baseUri.ClearFailed();
+                }
+                catch (OperationCanceledException e)
+                {
+                    var operationContext = OperationContext.CreateQueryContext(queryRequest.CurrentContextId, Context.BucketName, baseUri?.Authority);
+                    if (queryRequest is QueryRequest request)
+                    {
+                        operationContext.TimeoutMicroseconds = request.TimeoutValue;
+                    }
+
+                    Log.Info(operationContext.ToString());
+                    ProcessError(e, queryResult);
                 }
                 catch (HttpRequestException e)
                 {

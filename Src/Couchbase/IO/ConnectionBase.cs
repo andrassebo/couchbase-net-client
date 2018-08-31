@@ -1,7 +1,6 @@
 using System;
 using System.Net;
 using System.Net.Sockets;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Couchbase.Logging;
@@ -9,6 +8,7 @@ using Couchbase.Configuration.Client;
 using Couchbase.IO.Converters;
 using Couchbase.IO.Operations;
 using Couchbase.IO.Operations.Errors;
+using Couchbase.Tracing;
 using Couchbase.Utils;
 using OpenTracing;
 
@@ -185,12 +185,12 @@ namespace Couchbase.IO
             throw new NotImplementedException();
         }
 
-        public virtual void SendAsync(byte[] request, Func<SocketAsyncState, Task> callback)
+        public virtual Task SendAsync(byte[] request, Func<SocketAsyncState, Task> callback)
         {
-            SendAsync(request, callback, null, null);
+            return SendAsync(request, callback, null, null);
         }
 
-        public virtual void SendAsync(byte[] request, Func<SocketAsyncState, Task> callback, ISpan dispatchSpan, ErrorMap errorMap)
+        public virtual Task SendAsync(byte[] request, Func<SocketAsyncState, Task> callback, ISpan dispatchSpan, ErrorMap errorMap)
         {
             throw new NotImplementedException();
         }
@@ -296,32 +296,44 @@ namespace Couchbase.IO
 
         public string ContextId => ClientIdentifier.FormatConnectionString(ConnectionId);
 
-        protected string CreateCorrelationId(uint opaque)
+        protected OperationContext CreateOperationContext(uint opaque)
         {
-            return string.Join("/", ContextId, opaque.ToString("x"));
+            var context = OperationContext.CreateKvContext(opaque);
+            context.ConnectionId = ContextId;
+
+            if (Configuration != null)
+            {
+                context.BucketName = Configuration.BucketName;
+                context.TimeoutMicroseconds = (uint) Configuration.SendTimeout * 1000; // convert millis to micros
+            }
+
+            if (LocalEndPoint != null)
+            {
+                context.LocalEndpoint = LocalEndPoint.ToString();
+            }
+
+            if (EndPoint != null)
+            {
+                context.RemoteEndpoint = EndPoint.ToString();
+            }
+
+            return context;
         }
 
         protected Exception CreateTimeoutException(uint opaque)
         {
-            const string format = ", {0}", kv = "kv";
-            var correlationId = CreateCorrelationId(opaque);
-
-            var builder = new StringBuilder(ExceptionUtil.OperationTimeout);
-            builder.AppendFormat(format, kv);
-            builder.AppendFormat(format, correlationId);
-            builder.AppendFormat(format, LocalEndPoint);
-            builder.AppendFormat(format, Configuration.SendTimeout);
-            builder.AppendFormat(format, EndPoint);
-
-            var message = builder.ToString();
+            var context = CreateOperationContext(opaque);
+            var message = context.ToString();
             Log.Info(message);
 
             var exception = new SendTimeoutExpiredException(message);
-            exception.Data.Add("ServiceType", kv);
-            exception.Data.Add("CorrelationId", correlationId);
-            exception.Data.Add("LocalEndpoint", LocalEndPoint.ToString());
-            exception.Data.Add("Timeout", Configuration.SendTimeout);
-            exception.Data.Add("RemoteEndpoint", EndPoint.ToString());
+            exception.Data.Add("ServiceType", CouchbaseTags.ServiceKv);
+            exception.Data.Add("OperationId", context.OperationId);
+            exception.Data.Add("Bucket", context.BucketName);
+            exception.Data.Add("ConnectionId", context.ConnectionId);
+            exception.Data.Add("LocalEndpoint", context.LocalEndpoint);
+            exception.Data.Add("RemoteEndpoint", context.RemoteEndpoint);
+            exception.Data.Add("Timeout", context.TimeoutMicroseconds);
             return exception;
         }
     }

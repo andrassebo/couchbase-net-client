@@ -230,12 +230,6 @@ namespace Couchbase.N1QL
         }
 
         /// <summary>
-        /// The current active <see cref="ISpan"/> used for tracing.
-        /// Intended for internal use only.
-        /// </summary>
-        public ISpan ActiveSpan { get; set; }
-
-        /// <summary>
         /// Gets a value indicating whether use the <see cref="StreamingQueryClient" />.
         /// </summary>
         /// <value>
@@ -970,6 +964,18 @@ namespace Couchbase.N1QL
         {
             var temp = this as IQueryRequest;
             return temp.Lifespan.TimedOut();
+        }
+
+        /// <summary>
+        /// Gets or sets the timeout value of the <see cref="QueryRequest"/> in microseconds.
+        /// </summary>
+        internal uint TimeoutValue
+        {
+            get
+            {
+                var temp = this as IQueryRequest;
+                return temp.Lifespan.Duration * 1000;
+            }
         }
     }
 }

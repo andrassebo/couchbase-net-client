@@ -1,24 +1,25 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Runtime.InteropServices;
-using System.Text;
-using System.Threading.Tasks;
-
-namespace Couchbase.Core.Diagnostics
+namespace Couchbase.Tracing
 {
-    public interface IOperationTimer : IDisposable
+    /// <summary>
+    /// Collects and logs orphaned server responses.
+    /// Typically this is because the operation timed out before the response
+    /// was received.
+    /// </summary>
+    public interface IOrphanedResponseLogger
     {
-        ITimingStore Store { get; set; }
+        /// <summary>
+        /// Adds the specified operation context to the logger.
+        /// </summary>
+        void Add(OperationContext context);
     }
 }
 
-#region [ License information          ]
+#region [ License information ]
 
 /* ************************************************************
  *
  *    @author Couchbase <info@couchbase.com>
- *    @copyright 2017 Couchbase, Inc.
+ *    @copyright 2018 Couchbase, Inc.
  *
  *    Licensed under the Apache License, Version 2.0 (the "License");
  *    you may not use this file except in compliance with the License.

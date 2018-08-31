@@ -43,7 +43,8 @@ namespace Couchbase
     /// <seealso cref="Couchbase.IRefCountable" />
     /// <seealso cref="Couchbase.IQueryCacheInvalidator" />
     /// <seealso cref="Couchbase.Core.IO.SubDocument.ISubdocInvoker" />
-    public sealed class CouchbaseBucket : IBucket, IConfigObserver, IRefCountable, IQueryCacheInvalidator, ISubdocInvoker
+    public sealed class CouchbaseBucket : IBucket, IConfigObserver, IRefCountable, IQueryCacheInvalidator, ISubdocInvoker,
+        ITypeSerializerProvider
     {
         private static readonly ILog Log = LogManager.GetLogger<CouchbaseBucket>();
         private readonly IClusterController _clusterController;
@@ -103,6 +104,7 @@ namespace Couchbase
             _requestExecuter = requestExecuter;
             _converter = converter;
             _transcoder = transcoder;
+            GlobalTimeout = TimeSpan.FromMilliseconds(ClientConfiguration.Defaults.DefaultOperationLifespan);
         }
 
         /// <summary>
@@ -133,6 +135,9 @@ namespace Couchbase
         {
             get { return _clusterController != null ? _clusterController.Cluster : null; }
         }
+
+        /// <inheritdoc/>
+        ITypeSerializer ITypeSerializerProvider.Serializer => _transcoder.Serializer;
 
         /// <summary>
         /// Gets the key mapper used to map document keys to servers.
@@ -188,20 +193,11 @@ namespace Couchbase
         public IOperationResult<string> Append(string key, string value, TimeSpan timeout)
         {
             CheckDisposed();
-            IVBucket vBucket;
-            var server = GetServer(key, out vBucket);
-
-            var operation = new Append<string>(key, value, vBucket, _transcoder, timeout.GetSeconds())
+            var operation = new Append<string>(key, value, null, _transcoder, timeout.GetSeconds())
             {
                 BucketName = Name
             };
-            var operationResult = server.Send(operation);
-
-            if (CheckForConfigUpdates(operationResult, operation))
-            {
-                Log.Info("Requires retry {0}", User(key));
-            }
-            return operationResult;
+            return _requestExecuter.SendWithRetry(operation);
         }
 
         /// <summary>
@@ -366,20 +362,11 @@ namespace Couchbase
         public IOperationResult<byte[]> Append(string key, byte[] value, TimeSpan timeout)
         {
             CheckDisposed();
-            IVBucket vBucket;
-            var server = GetServer(key, out vBucket);
-
-            var operation = new Append<byte[]>(key, value, vBucket, _transcoder, timeout.GetSeconds())
+            var operation = new Append<byte[]>(key, value, null, _transcoder, timeout.GetSeconds())
             {
                 BucketName = Name
             };
-            var operationResult = server.Send(operation);
-
-            if (CheckForConfigUpdates(operationResult, operation))
-            {
-                Log.Info("Requires retry {0}", User(key));
-            }
-            return operationResult;
+            return _requestExecuter.SendWithRetry(operation);
         }
 
         /// <summary>
@@ -437,7 +424,7 @@ namespace Couchbase
             return new BucketManager(this,
                 _configInfo.ClientConfig,
                 new JsonDataMapper(_configInfo.ClientConfig),
-                new CouchbaseHttpClient(username, password),
+                new CouchbaseHttpClient(username, password, _clusterController.Configuration),
                 username,
                 password);
         }
@@ -1213,7 +1200,7 @@ namespace Couchbase
         /// <returns>An <see cref="IDocumentResult{T}"/> object containing the document if it's found and any other operation specific info.</returns>
         public async Task<IDocumentResult<T>> GetDocumentAsync<T>(string id)
         {
-            return await GetDocumentAsync<T>(id, GlobalTimeout);
+            return await GetDocumentAsync<T>(id, GlobalTimeout).ContinueOnAnyContext();;
         }
 
         /// <summary>
@@ -1516,7 +1503,7 @@ namespace Couchbase
         /// </returns>
         public Task<IOperationResult<T>> GetAndLockAsync<T>(string key, TimeSpan expiration, TimeSpan timeout)
         {
-            return GetAndLockAsync<T>(key, expiration, timeout);
+            return GetAndLockAsync<T>(key, (uint)expiration.TotalSeconds, timeout);
         }
 
         /// <summary>
@@ -1612,8 +1599,9 @@ namespace Couchbase
         public IOperationResult<ulong> Increment(string key, ulong delta, TimeSpan timeout)
         {
             const ulong initial = 1;
+            const uint expiration = 0;//infinite - there is also a 'special' value -1: 'don't create if missing'
 
-            return Increment(key, delta, initial, timeout);
+            return Increment(key, delta, initial, expiration, timeout);
         }
 
         /// <summary>
@@ -1632,8 +1620,9 @@ namespace Couchbase
         public Task<IOperationResult<ulong>> IncrementAsync(string key, ulong delta, TimeSpan timeout)
         {
             const ulong initial = 1;
+            const uint expiration = 0;//infinite - there is also a 'special' value -1: 'don't create if missing'
 
-            return IncrementAsync(key, delta, initial, timeout);
+            return IncrementAsync(key, delta, initial, expiration, timeout);
         }
 
         /// <summary>
@@ -1646,8 +1635,7 @@ namespace Couchbase
         /// <returns>If the key doesn't exist, the server will respond with the initial value. If not the incremented value will be returned.</returns>
         public IOperationResult<ulong> Increment(string key, ulong delta, ulong initial)
         {
-            //infinite - there is also a 'special' value -1: 'don't create if missing'
-            const uint expiration = 0;
+            const uint expiration = 0;//infinite - there is also a 'special' value -1: 'don't create if missing'
 
             return Increment(key, delta, initial, expiration);
         }
@@ -1688,21 +1676,12 @@ namespace Couchbase
         public IOperationResult<ulong> Increment(string key, ulong delta, ulong initial, uint expiration, TimeSpan timeout)
         {
             CheckDisposed();
-            IVBucket vBucket;
-            var server = GetServer(key, out vBucket);
-
-            var operation = new Increment(key, initial, delta, vBucket, _transcoder, timeout.GetSeconds())
+            var operation = new Increment(key, initial, delta, null, _transcoder, timeout.GetSeconds())
             {
                 BucketName = Name,
                 Expires = expiration
             };
-            var operationResult = server.Send(operation);
-
-            if (CheckForConfigUpdates(operationResult, operation))
-            {
-                Log.Info("Requires retry {0}", User(key));
-            }
-            return operationResult;
+            return _requestExecuter.SendWithRetry(operation);
         }
 
         /// <summary>
@@ -1724,7 +1703,13 @@ namespace Couchbase
         /// &gt;
         public Task<IOperationResult<ulong>> IncrementAsync(string key, ulong delta, ulong initial, uint expiration, TimeSpan timeout)
         {
-            return IncrementAsync(key, delta, initial, new TimeSpan(expiration), timeout);
+            CheckDisposed();
+            var operation = new Increment(key, initial, delta, null, _transcoder, timeout.GetSeconds())
+            {
+                BucketName = Name,
+                Expires = expiration
+            };
+            return _requestExecuter.SendWithRetryAsync(operation);
         }
 
         /// <summary>
@@ -1768,7 +1753,7 @@ namespace Couchbase
         /// <returns>The <see cref="Task{IOperationResult}"/> object representing the asynchronous operation.</returns>/// <returns></returns>
         public Task<IOperationResult<ulong>> IncrementAsync(string key)
         {
-            return IncrementAsync(key, 1);
+            return IncrementAsync(key, GlobalTimeout);
         }
 
         /// <summary>
@@ -1781,7 +1766,10 @@ namespace Couchbase
         /// <returns>The <see cref="Task{IOperationResult}"/> object representing the asynchronous operation.</returns>
         public Task<IOperationResult<ulong>> IncrementAsync(string key, ulong delta)
         {
-            return IncrementAsync(key, delta, 1, GlobalTimeout);
+            const ulong initial = 1;
+            const uint expiration = 0;//infinite - there is also a 'special' value -1: 'don't create if missing'
+
+            return IncrementAsync(key, delta, initial, expiration);
         }
 
         /// <summary>
@@ -1795,7 +1783,9 @@ namespace Couchbase
         /// <returns>The <see cref="Task{IOperationResult}"/> object representing the asynchronous operation.</returns>
         public Task<IOperationResult<ulong>> IncrementAsync(string key, ulong delta, ulong initial)
         {
-            return IncrementAsync(key, delta, initial, 0, GlobalTimeout);
+            const uint expiration = 0;//infinite - there is also a 'special' value -1: 'don't create if missing'
+
+            return IncrementAsync(key, delta, initial, expiration);
         }
 
         /// <summary>
@@ -1848,13 +1838,7 @@ namespace Couchbase
         /// </remarks>
         public Task<IOperationResult<ulong>> IncrementAsync(string key, ulong delta, ulong initial, TimeSpan expiration, TimeSpan timeout)
         {
-            CheckDisposed();
-            var operation = new Increment(key, initial, delta, null, _transcoder, timeout.GetSeconds())
-            {
-                BucketName = Name,
-                Expires = expiration.ToTtl()
-            };
-            return _requestExecuter.SendWithRetryAsync(operation);
+            return IncrementAsync(key, delta, initial, expiration.ToTtl(), timeout);
         }
 
         /// <summary>
@@ -2173,7 +2157,7 @@ namespace Couchbase
         /// </returns>
         public Task<IOperationResult<T>> InsertAsync<T>(string key, T value, TimeSpan expiration, TimeSpan timeout)
         {
-            return InsertAsync(key, value, expiration, timeout);
+            return InsertAsync(key, value, (uint)expiration.TotalSeconds, timeout);
         }
 
         /// <summary>
@@ -2683,7 +2667,7 @@ namespace Couchbase
             var observer = new KeyObserver(_pending, _configInfo, _clusterController, config.ObserveInterval, (int)timeout.GetSeconds());
             using (var cts = new CancellationTokenSource(config.ObserveTimeout))
             {
-                var result = await observer.ObserveAsync(key, cas, deletion, replicateTo, persistTo, cts);
+                var result = await observer.ObserveAsync(key, cas, deletion, replicateTo, persistTo, cts).ContinueOnAnyContext();
                 return result ? ObserveResponse.DurabilitySatisfied : ObserveResponse.DurabilityNotSatisfied;
             }
         }
@@ -2751,7 +2735,7 @@ namespace Couchbase
             var observer = new KeyObserver(_pending, _configInfo, _clusterController, config.ObserveInterval, config.ObserveTimeout);
             using (var cts = new CancellationTokenSource(config.ObserveTimeout))
             {
-                var result = await observer.ObserveAsync(key, cas, deletion, replicateTo, persistTo, cts);
+                var result = await observer.ObserveAsync(key, cas, deletion, replicateTo, persistTo, cts).ContinueOnAnyContext();
                 return result ? ObserveResponse.DurabilitySatisfied : ObserveResponse.DurabilityNotSatisfied;
             }
         }
@@ -2779,20 +2763,11 @@ namespace Couchbase
         public IOperationResult<string> Prepend(string key, string value, TimeSpan timeout)
         {
             CheckDisposed();
-            IVBucket vBucket;
-            var server = GetServer(key, out vBucket);
-
-            var operation = new Prepend<string>(key, value, vBucket, _transcoder, timeout.GetSeconds())
+            var operation = new Prepend<string>(key, value, null, _transcoder, timeout.GetSeconds())
             {
                 BucketName = Name
             };
-            var operationResult = server.Send(operation);
-
-            if (CheckForConfigUpdates(operationResult, operation))
-            {
-                Log.Info("Requires retry {0}", User(key));
-            }
-            return operationResult;
+            return _requestExecuter.SendWithRetry(operation);
         }
 
         /// <summary>
@@ -2937,20 +2912,11 @@ namespace Couchbase
         public IOperationResult<byte[]> Prepend(string key, byte[] value, TimeSpan timeout)
         {
             CheckDisposed();
-            IVBucket vBucket;
-            var server = GetServer(key, out vBucket);
-
-            var operation = new Prepend<byte[]>(key, value, vBucket, _transcoder, timeout.GetSeconds())
+            var operation = new Prepend<byte[]>(key, value, null, _transcoder, timeout.GetSeconds())
             {
                 BucketName = Name
             };
-            var operationResult = server.Send(operation);
-
-            if (CheckForConfigUpdates(operationResult, operation))
-            {
-                Log.Info("Requires retry {0}", User(key));
-            }
-            return operationResult;
+            return _requestExecuter.SendWithRetry(operation);
         }
 
         /// <summary>
@@ -6259,7 +6225,7 @@ namespace Couchbase
         /// <returns>The cluster version, or null if unavailable.</returns>
         public async Task<ClusterVersion?> GetClusterVersionAsync()
         {
-            return await ClusterVersionProvider.Instance.GetVersionAsync(this);
+            return await ClusterVersionProvider.Instance.GetVersionAsync(this).ContinueOnAnyContext();
         }
 
         void CheckDisposed()
@@ -6524,7 +6490,12 @@ namespace Couchbase
 
         public Task<ISearchQueryResult> QueryAsync(SearchQuery searchQuery)
         {
-            return _requestExecuter.SendWithRetryAsync(searchQuery);
+            return QueryAsync(searchQuery, CancellationToken.None);
+        }
+
+        public Task<ISearchQueryResult> QueryAsync(SearchQuery searchQuery, CancellationToken cancellationToken)
+        {
+            return _requestExecuter.SendWithRetryAsync(searchQuery, cancellationToken);
         }
 
         #endregion
@@ -7446,7 +7417,7 @@ namespace Couchbase
         public async Task<IResult> ListPrependAsync(string key, object value, bool createList, TimeSpan timeout)
         {
             var result = await MutateIn<object>(key).ArrayPrepend(value, createList)
-                .WithTimeout(timeout).ExecuteAsync();
+                .WithTimeout(timeout).ExecuteAsync().ContinueOnAnyContext();
 
             return new DefaultResult
             {
@@ -7723,7 +7694,7 @@ namespace Couchbase
                         Message = result.Message
                     };
                 }
-                await Task.Delay(100); //could be made a configurable in a later commit
+                await Task.Delay(100).ContinueOnAnyContext(); //could be made a configurable in a later commit
             } while (attempted++ < maxAttempts);
 
             return new DefaultResult

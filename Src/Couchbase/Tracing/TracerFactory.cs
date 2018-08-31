@@ -1,35 +1,31 @@
-﻿using System;
-using Couchbase.Logging;
+using System;
+using Couchbase.Configuration.Client;
+using OpenTracing;
+using OpenTracing.Noop;
 
-namespace Couchbase.Core.Diagnostics
+namespace Couchbase.Tracing
 {
-    public static class TimingFactory
+    internal static class TracerFactory
     {
-        private static ITimingStore _store;
-        private static volatile object _lockObj = new object();
-        private static ILog Log = LogManager.GetLogger<OperationTimer>();
-
-        public static Func<TimingLevel, object, IOperationTimer> GetTimer()
+        public static Func<ITracer> GetFactory(ClientConfiguration config)
         {
-            if (_store != null) return (level, target) => new OperationTimer(level, target, _store);
-            lock (_lockObj)
+            if (config.OperationTracingEnabled)
             {
-                if (_store == null)
-                {
-                    _store = new CommonLogStore(Log);
-                }
+                // TODO: extend to allow type building from config
+                return () => new ThresholdLoggingTracer();
             }
-            return (level, target) => new OperationTimer(level, target, _store);
+
+            return NoopTracerFactory.Create;
         }
     }
 }
 
-#region [ License information          ]
+#region [ License information ]
 
 /* ************************************************************
  *
  *    @author Couchbase <info@couchbase.com>
- *    @copyright 2017 Couchbase, Inc.
+ *    @copyright 2018 Couchbase, Inc.
  *
  *    Licensed under the Apache License, Version 2.0 (the "License");
  *    you may not use this file except in compliance with the License.

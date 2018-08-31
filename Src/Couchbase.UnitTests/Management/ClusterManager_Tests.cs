@@ -139,7 +139,11 @@ namespace Couchbase.UnitTests.Management
         [TestCase(HttpStatusCode.InternalServerError)]
         public void UpsertUser_Returns_True_When_Response_Is_Success(HttpStatusCode responseHttpCode)
         {
-            var handler = FakeHttpMessageHandler.Create(request => new HttpResponseMessage(responseHttpCode));
+            const string responseBody = "respose body";
+            var handler = FakeHttpMessageHandler.Create(request => new HttpResponseMessage(responseHttpCode)
+            {
+                Content = new StringContent(responseBody)
+            });
             var client = new HttpClient(handler);
             var clientConfig = new ClientConfiguration();
             var serverConfigMock = new Mock<IServerConfig>();
@@ -149,6 +153,7 @@ namespace Couchbase.UnitTests.Management
             var result = manager.UpsertUser(AuthenticationDomain.Local, "alice", "secure123", "Alice Liddell", new Role {Name = "Admin"});
 
             Assert.AreEqual(responseHttpCode == HttpStatusCode.OK, result.Success);
+            Assert.AreEqual(responseBody, result.Message);
         }
 
         [TestCase(null, "password=secure123&roles=Admin%2CBucketManager%5Bdefault%5D")]
@@ -190,12 +195,29 @@ namespace Couchbase.UnitTests.Management
             manager.UpsertUser(AuthenticationDomain.Local, "alice", "secure123", "Alice Liddell", new Role { Name = "Admin" }, new Role { Name = "BucketManager", BucketName = "default" });
         }
 
+        [TestCase(null)]
+        [TestCase("")]
+        public void UpsertUser_Throws_Exception_When_Password_Is_Empty_For_Local_User(string password)
+        {
+            var manager = new ClusterManager(null, null, null, null, "username", "password");
+
+            // Throws AggregateException because work is done async
+            Assert.Throws<AggregateException>(() =>
+            {
+                manager.UpsertUser(AuthenticationDomain.Local, "username", password, null, new Role());
+            });
+        }
+
         [TestCase(HttpStatusCode.OK, true)]
         [TestCase(HttpStatusCode.BadRequest, false)]
         [TestCase(HttpStatusCode.InternalServerError, false)]
         public void RemoveUser_Returns_True_When_Response_Is_Success(HttpStatusCode responseHttpCode, bool expectedResult)
         {
-            var handler = FakeHttpMessageHandler.Create(request => new HttpResponseMessage(responseHttpCode));
+            const string responseBody = "respose body";
+            var handler = FakeHttpMessageHandler.Create(request => new HttpResponseMessage(responseHttpCode)
+            {
+                Content = new StringContent(responseBody)
+            });
             var client = new HttpClient(handler);
             var clientConfig = new ClientConfiguration();
             var serverConfigMock = new Mock<IServerConfig>();
@@ -205,6 +227,7 @@ namespace Couchbase.UnitTests.Management
             var result = manager.RemoveUser(AuthenticationDomain.Local, "alice");
 
             Assert.AreEqual(expectedResult, result.Success);
+            Assert.AreEqual(responseBody, result.Message);
         }
 
         [Test]

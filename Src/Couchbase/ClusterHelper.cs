@@ -1,12 +1,13 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using System.Threading;
 using Couchbase.Authentication;
 using Couchbase.Configuration.Client;
 using Couchbase.Core;
+using Couchbase.Utils;
 
-#if NET45
+#if NET452
 using System.Configuration;
 using Couchbase.Configuration.Client.Providers;
 #endif
@@ -140,7 +141,7 @@ namespace Couchbase
                 throw new InitializationException("Call Cluster.Initialize() before calling this method.");
             }
 
-            await SemaphoreSlim.WaitAsync().ConfigureAwait(false);
+            await SemaphoreSlim.WaitAsync().ContinueOnAnyContext();
             try
             {
                 if (Buckets.TryGetValue(bucketName, out bucket))
@@ -319,7 +320,7 @@ namespace Couchbase
             Initialize(factory);
         }
 
-#if NET45
+#if NET452
 
         /// <summary>
         /// Ctor for creating Cluster instance.

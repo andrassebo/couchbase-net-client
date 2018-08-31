@@ -48,7 +48,8 @@ namespace Couchbase.Configuration.Server.Monitoring
                         _log.Debug("Waiting to check configs...");
 
                         // Test at every interval.  Wait before first test.
-                        await Task.Delay(TimeSpan.FromMilliseconds(Configuration.ConfigPollInterval), _cts.Token);
+                        await Task.Delay(TimeSpan.FromMilliseconds(Configuration.ConfigPollInterval), _cts.Token).
+                            ContinueOnAnyContext();
 
                         _log.Debug("Checking configs...");
 
@@ -59,7 +60,7 @@ namespace Couchbase.Configuration.Server.Monitoring
 
                         if (lastCheckedPlus > now)
                         {
-                            _log.Info("By-passing config checks because {0} > {1}", lastCheckedPlus, now);
+                            _log.Debug("By-passing config checks because {0} > {1}", lastCheckedPlus, now);
                             continue;
                         }
 
@@ -72,14 +73,14 @@ namespace Couchbase.Configuration.Server.Monitoring
                                 // ReSharper disable once PossibleMultipleEnumeration
                                 if (!servers.Any())
                                 {
-                                    _log.Info("No servers with Data service available for bucket {0}", ctx.BucketName);
+                                    _log.Debug("No servers with Data service available for bucket {0}", ctx.BucketName);
                                     continue;
                                 }
 
                                 index = (index + 1) % servers.Count;
                                 var server = servers[index];
 
-                                _log.Info("Using index {0} - server {1}", index, server);
+                                _log.Debug("Using index {0} - server {1}", index, server);
 
                                 var operation = new Config(
                                     ClusterController.Transcoder,
@@ -87,7 +88,7 @@ namespace Couchbase.Configuration.Server.Monitoring
                                     server.EndPoint);
 
                                 IOperationResult<BucketConfig> configResult;
-                                using (Configuration.Tracer.StartParentSpan(operation, addIgnoreTag: true))
+                                using (Configuration.Tracer.StartParentScope(operation, addIgnoreTag: true))
                                 {
                                     configResult = server.Send(operation);
                                 }
@@ -97,7 +98,7 @@ namespace Couchbase.Configuration.Server.Monitoring
                                     var config = configResult.Value;
                                     if (config != null)
                                     {
-                                        _log.Info("Checking config with revision #{0}", config.Rev);
+                                        _log.Debug("Checking config with revision #{0}", config.Rev);
                                         ClusterController.EnqueueConfigForProcessing(config);
                                         break;
                                     }

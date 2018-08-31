@@ -1,4 +1,4 @@
-﻿#if NET45
+﻿#if NET452
 using System.Configuration;
 using Couchbase.IO;
 
@@ -219,19 +219,6 @@ namespace Couchbase.Configuration.Client.Providers
         {
             get { return (uint)this["closeAttemptInterval"]; }
             set { this["closeAttemptInterval"] = value; }
-        }
-
-        /// <summary>
-        /// Gets or sets a value indicating whether KV operation server duration times are collected during processing.
-        /// </summary>
-        /// <value>
-        /// <c>true</c> if server durations are collected otherwise, <c>false</c>.
-        /// </value>
-        [ConfigurationProperty("serverDurationTracingEnabled", IsRequired = false, DefaultValue = false)]
-        public bool ServerDurationTracingEnabled
-        {
-            get => (bool)this["serverDurationTracingEnabled"];
-            set => this["serverDurationTracingEnabled"] = value;
         }
 
         public override bool IsReadOnly()

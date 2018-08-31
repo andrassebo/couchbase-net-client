@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using Couchbase.IO.Converters;
 using Couchbase.IO.Operations.Errors;
@@ -12,14 +12,14 @@ namespace Couchbase.IO.Operations
 
         internal static OperationHeader CreateHeader(this SocketAsyncState state, out ErrorCode errorCode)
         {
-            if (state.Data == null || state.Data.Length < HeaderIndexFor.HeaderLength)
+            if (state.Data == null || state.Data.Length < OperationHeader.Length)
             {
                 errorCode = null;
                 return new OperationHeader { Status = ResponseStatus.None };
             }
 
             // take first 24 bytes of the buffer to create the header then reset stream position
-            var buffer = new byte[24];
+            var buffer = new byte[OperationHeader.Length];
             state.Data.Position = 0;
             state.Data.Read(buffer, 0, buffer.Length);
             state.Data.Position = 0;
@@ -34,7 +34,7 @@ namespace Couchbase.IO.Operations
 
         internal static OperationHeader CreateHeader(this byte[] buffer, ErrorMap errorMap, out ErrorCode errorCode)
         {
-            if (buffer == null || buffer.Length < HeaderIndexFor.HeaderLength)
+            if (buffer == null || buffer.Length < OperationHeader.Length)
             {
                 errorCode = null;
                 return new OperationHeader {Status = ResponseStatus.None};
@@ -76,20 +76,22 @@ namespace Couchbase.IO.Operations
             var status = (ResponseStatus) code;
 
             // Is it a known response status?
-            if (Enum.IsDefined(typeof(ResponseStatus), status))
+            if (!Enum.IsDefined(typeof(ResponseStatus), status))
             {
-                errorCode = null;
-                return status;
+                status = ResponseStatus.UnknownError;
             }
 
             // If available, try and use the error map to get more details
-            if (errorMap != null && errorMap.TryGetGetErrorCode(code, out errorCode))
+            if (errorMap != null)
             {
-                return ResponseStatus.Failure;
+                errorMap.TryGetGetErrorCode(code, out errorCode);
+            }
+            else
+            {
+                errorCode = null;//make the compiler happy
             }
 
-            errorCode = null;
-            return ResponseStatus.UnknownError;
+            return status;
         }
 
         internal static long? GetServerDuration(this OperationHeader header, MemoryStream stream)
@@ -101,7 +103,7 @@ namespace Couchbase.IO.Operations
 
             // copy framing extra bytes then reset steam position
             var bytes = new byte[header.FramingExtrasLength];
-            stream.Position = HeaderIndexFor.HeaderLength;
+            stream.Position = OperationHeader.Length;
             stream.Read(bytes, 0, header.FramingExtrasLength);
             stream.Position = 0;
 
@@ -117,7 +119,7 @@ namespace Couchbase.IO.Operations
 
             // copy framing extra bytes
             var bytes = new byte[header.FramingExtrasLength];
-            Buffer.BlockCopy(buffer, HeaderIndexFor.HeaderLength, bytes, 0, header.FramingExtrasLength);
+            Buffer.BlockCopy(buffer, OperationHeader.Length, bytes, 0, header.FramingExtrasLength);
 
             return GetServerDuration(bytes);
         }

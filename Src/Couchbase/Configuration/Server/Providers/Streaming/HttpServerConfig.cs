@@ -36,7 +36,7 @@ namespace Couchbase.Configuration.Server.Providers.Streaming
             _clientConfig = clientConfig;
             _bucketName = bucketName;
 
-            _httpClient = new CouchbaseHttpClient(userName, password);
+            _httpClient = new CouchbaseHttpClient(userName, password, clientConfig);
         }
 
         public string BucketName
@@ -84,6 +84,10 @@ namespace Couchbase.Configuration.Server.Providers.Streaming
                 Log.Info("Bootstrapped from {0}", server);
             }
             catch (BootstrapException e)
+            {
+                Log.Error(e);
+            }
+            catch (HttpRequestException e)
             {
                 Log.Error(e);
             }
