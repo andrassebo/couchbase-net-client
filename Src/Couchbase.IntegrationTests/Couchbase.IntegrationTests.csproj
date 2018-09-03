@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFrameworks>netcoreapp1.1;netcoreapp2.0</TargetFrameworks>
+    <TargetFrameworks>netcoreapp2.0</TargetFrameworks>
     <RootNamespace>Couchbase.IntegrationTests</RootNamespace>
     <AssemblyName>Couchbase.IntegrationTests</AssemblyName>
     <NetStandardImplicitPackageVersion>2.0.1</NetStandardImplicitPackageVersion>
